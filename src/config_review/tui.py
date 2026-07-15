@@ -6,9 +6,12 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
+import glob
+import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 try:
@@ -172,6 +175,96 @@ def footer_segments(text: str) -> list[tuple[str, str]]:
             kind = "text"
         output.append((part, kind))
     return output
+
+
+def main_footer_lines(available_width: int) -> tuple[str, ...]:
+    """Return a non-clipping main-screen footer for the available terminal width."""
+    if available_width >= 65:
+        return (
+            "Navigate: [j/k or ↑/↓]select  [Space]expand/collapse  [Enter]open",
+            "Actions: [u]undo  [c]configure  [?]help  [q]quit",
+        )
+    if available_width >= 49:
+        return (
+            "Navigate: [j/k]select  [Space]expand  [Enter]open",
+            "Actions: [c]configure  [?]help  [q]quit",
+        )
+    if available_width >= 28:
+        return (
+            "[j/k]select  [Enter]open",
+            "[c]config  [?]help  [q]quit",
+        )
+    return ("[c]config  [?]help  [q]quit",)
+
+
+def _directory_input(prompt: str) -> str:
+    """Read a directory path with best-effort shell-style Tab completion."""
+    try:
+        import readline
+    except ImportError:  # pragma: no cover - unavailable on some platforms
+        return input(prompt)
+
+    previous_completer = readline.get_completer()
+    previous_delimiters = readline.get_completer_delims()
+
+    def complete(value: str, state: int) -> str | None:
+        expanded = os.path.expanduser(value or "")
+        pattern = f"{expanded}*" if expanded else "*"
+        matches = [
+            match.rstrip(os.sep) + os.sep
+            for match in sorted(glob.glob(pattern))
+            if Path(match).is_dir()
+        ]
+        return matches[state] if state < len(matches) else None
+
+    try:
+        readline.set_completer(complete)
+        readline.set_completer_delims("\t\n")
+        readline.parse_and_bind("tab: complete")
+        return input(prompt)
+    finally:
+        readline.set_completer(previous_completer)
+        readline.set_completer_delims(previous_delimiters)
+
+
+def _environment_pairs_under(
+    project: Path,
+    source_name: str,
+    target_name: str,
+    *,
+    max_depth: int = 5,
+) -> list[tuple[Path, Path]]:
+    """Find likely sibling source/target directories beneath one selected root."""
+    project = project.resolve()
+    source_names = tuple(dict.fromkeys((source_name.lower(), "dev")))
+    target_names = tuple(dict.fromkeys((target_name.lower(), "test")))
+    excluded = {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "build",
+        "dist",
+        "__pycache__",
+    }
+    found: set[tuple[Path, Path]] = set()
+    for root_text, dirnames, _filenames in os.walk(project, followlinks=False):
+        root = Path(root_text)
+        try:
+            depth = len(root.relative_to(project).parts)
+        except ValueError:
+            continue
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name.lower() not in excluded and not (root / name).is_symlink() and depth < max_depth
+        )
+        by_lower = {name.lower(): name for name in dirnames}
+        source = next((root / by_lower[name] for name in source_names if name in by_lower), None)
+        target = next((root / by_lower[name] for name in target_names if name in by_lower), None)
+        if source is not None and target is not None and source != target:
+            found.add((source.resolve(), target.resolve()))
+    return sorted(found, key=lambda pair: (len(pair[0].parts), pair[0].as_posix().lower()))
 
 
 class Tui:
@@ -558,7 +651,8 @@ class Tui:
             self._add(stdscr, 8, 2, "─" * max(1, width - 4), self._color_pair(4))
 
             list_top = 9
-            list_height = max(1, height - list_top - 3)
+            footer_lines = main_footer_lines(max(1, width - 4))
+            list_height = max(1, height - list_top - len(footer_lines) - 1)
             display_rows = self._main_rows(records)
             selectable_positions = [
                 index for index, row in enumerate(display_rows) if row.kind in {"file", "change"}
@@ -678,13 +772,10 @@ class Tui:
                     self._color_pair(2),
                 )
 
-            footer = (
-                "Navigate: [j/k or ↑/↓]select  [Space]expand/collapse  "
-                "Prev file: [  Next file: ]  [Enter]open  "
-                "Actions: [u]undo session changes  [p]patterns  [f]display filters  "
-                "[s]rescan  [x]config  [?]help  [q]quit"
-            )
-            self._draw_footer(stdscr, height - 2, 2, footer)
+            footer_lines = main_footer_lines(max(1, width - 4))
+            footer_top = height - len(footer_lines) - 1
+            for footer_row, footer_text in enumerate(footer_lines):
+                self._draw_footer(stdscr, footer_top + footer_row, 2, footer_text)
             self._add(stdscr, height - 1, 2, self.status, self._color_pair(3))
             stdscr.refresh()
 
@@ -753,6 +844,8 @@ class Tui:
                 self.pattern_manager_screen(stdscr)
             elif key in (ord("f"), ord("F")):
                 self.display_filters_screen(stdscr)
+            elif key in (ord("c"), ord("C")):
+                self.configure_screen(stdscr)
             elif key in (ord("x"), ord("X")):
                 self.edit_project_config(stdscr)
             elif key == ord("?"):
@@ -2163,6 +2256,235 @@ class Tui:
         stdscr.refresh()
         return stdscr.getch() in (ord("y"), ord("Y"))
 
+    def _prompt_directory(
+        self,
+        stdscr: Any,
+        prompt: str,
+        current: Path,
+    ) -> Path | None:
+        """Temporarily leave curses and collect one directory with Tab completion."""
+        curses.def_prog_mode()
+        curses.endwin()
+        try:
+            print("\nCONFIG REVIEW WORKBENCH — COMPARISON PATHS")
+            print("Press Enter to keep the current value. Press Tab to complete paths.")
+            print(f"Current: {current}")
+            try:
+                raw = _directory_input(f"{prompt}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self.status = "Path change canceled."
+                return None
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+        if not raw:
+            return current.resolve()
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve()
+        if not candidate.is_dir():
+            self.status = f"Directory not found: {candidate}"
+            return None
+        return candidate
+
+    def _switch_comparison_paths(
+        self,
+        stdscr: Any,
+        source: Path,
+        target: Path,
+    ) -> bool:
+        if self.workbench.settings.dry_run:
+            self.status = "Dry-run mode: comparison-path changes are disabled."
+            return False
+        source = source.resolve()
+        target = target.resolve()
+        if source == target:
+            self.status = "DEV/source and TEST/target must be different directories."
+            return False
+        if (source, target) == (
+            self.workbench.settings.source.resolve(),
+            self.workbench.settings.target.resolve(),
+        ):
+            self.status = "Comparison paths are unchanged."
+            return False
+
+        if self.workbench.has_review_progress():
+            if not self.confirm(
+                stdscr,
+                "Save the current review session before switching comparison paths?",
+            ):
+                self.status = "Comparison-path change canceled."
+                return False
+            try:
+                self.workbench.save_session()
+            except WorkbenchError as exc:
+                self.status = f"Could not save the current review session: {exc}"
+                return False
+
+        try:
+            disabled_patterns = self.workbench.reconfigure_paths(source, target)
+        except WorkbenchError as exc:
+            self.status = str(exc)
+            return False
+
+        self.selected = 0
+        self.main_selection_key = None
+        self.expanded_files.clear()
+        self.pending_change_index = None
+        self.pending_open_review = False
+        self.status = f"Switched comparison to {source.name} → {target.name}."
+        if disabled_patterns:
+            self.status += f" Disabled {disabled_patterns} saved pattern(s); review them again."
+        if self.workbench.session.has_saved:
+            self.startup_saved_session_screen(stdscr)
+        return True
+
+    def change_project_root(self, stdscr: Any) -> bool:
+        source = self.workbench.settings.source.resolve()
+        target = self.workbench.settings.target.resolve()
+        current_root = source.parent if source.parent == target.parent else Path.cwd().resolve()
+        project = self._prompt_directory(stdscr, "Project root", current_root)
+        if project is None:
+            return False
+
+        # Pasting the current environment directory is a common mistake. Search
+        # its parent first when that produces one clear sibling pair.
+        roots = [project]
+        if project.name.lower() in {source.name.lower(), target.name.lower(), "dev", "test"}:
+            roots.insert(0, project.parent)
+
+        pairs: list[tuple[Path, Path]] = []
+        for root in roots:
+            pairs = _environment_pairs_under(root, source.name, target.name)
+            if pairs:
+                break
+        if not pairs:
+            self.status = (
+                f"No sibling {source.name}/{target.name} or dev/test directories were found "
+                f"under {project}. Use 'Set exact DEV and TEST directories' for a custom layout."
+            )
+            return False
+        if len(pairs) > 1:
+            self.status = (
+                f"Found {len(pairs)} comparison projects under {project}. "
+                "Use 'Set exact DEV and TEST directories' to choose one explicitly."
+            )
+            return False
+        return self._switch_comparison_paths(stdscr, *pairs[0])
+
+    def set_exact_comparison_paths(self, stdscr: Any) -> bool:
+        source = self._prompt_directory(
+            stdscr,
+            "DEV/source directory",
+            self.workbench.settings.source,
+        )
+        if source is None:
+            return False
+        target = self._prompt_directory(
+            stdscr,
+            "TEST/target directory",
+            self.workbench.settings.target,
+        )
+        if target is None:
+            return False
+        return self._switch_comparison_paths(stdscr, source, target)
+
+    def comparison_paths_screen(self, stdscr: Any) -> None:
+        items = [
+            ("Change project root", "Find one sibling DEV/TEST pair beneath a selected root"),
+            ("Set exact DEV and TEST directories", "Use this for custom or non-sibling layouts"),
+            ("Back", "Return to Configure"),
+        ]
+        selected = 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            self._add(stdscr, 1, 2, "COMPARISON PATHS", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 3, 2, f"DEV:  {self.workbench.settings.source}")
+            self._add(stdscr, 4, 2, f"TEST: {self.workbench.settings.target}")
+            for index, (label, description) in enumerate(items):
+                y = 7 + index * 2
+                attr = curses.A_REVERSE if index == selected else 0
+                self._add(stdscr, y, 2, f"  {label}", attr | curses.A_BOLD)
+                if width >= 58:
+                    self._add(stdscr, y + 1, 4, description, attr)
+            self._draw_footer(
+                stdscr,
+                height - 1,
+                1,
+                "Navigate: [↑/↓]select  [Enter]open  [b]ack",
+            )
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("b"), ord("B"), 27, ord("q"), ord("Q")):
+                return
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(items)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(items)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if selected == 0:
+                    if self.change_project_root(stdscr):
+                        return
+                elif selected == 1:
+                    if self.set_exact_comparison_paths(stdscr):
+                        return
+                else:
+                    return
+
+    def configure_screen(self, stdscr: Any) -> None:
+        items = [
+            ("Comparison paths", "Change the project root or exact DEV/TEST directories"),
+            ("Pattern filters", "Review project-wide environment/noise filters"),
+            ("Display filters", "Whitespace, mapping order, and focused contrast"),
+            ("Edit project config", "Open .config-review.yaml in the configured editor"),
+            ("Rescan", "Refresh the current DEV and TEST directories"),
+            ("Back", "Return to the main file list"),
+        ]
+        selected = 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            self._add(stdscr, 1, 2, "CONFIGURE", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 3, 2, f"DEV:  {self.workbench.settings.source}")
+            self._add(stdscr, 4, 2, f"TEST: {self.workbench.settings.target}")
+            for index, (label, description) in enumerate(items):
+                y = 7 + index * 2
+                attr = curses.A_REVERSE if index == selected else 0
+                self._add(stdscr, y, 2, f"  {label}", attr | curses.A_BOLD)
+                if width >= 58:
+                    self._add(stdscr, y + 1, 4, description, attr)
+            self._draw_footer(
+                stdscr,
+                height - 1,
+                1,
+                "Navigate: [↑/↓]select  [Enter]open  [b]ack",
+            )
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("b"), ord("B"), 27, ord("q"), ord("Q")):
+                return
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(items)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(items)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if selected == 0:
+                    self.comparison_paths_screen(stdscr)
+                elif selected == 1:
+                    self.pattern_manager_screen(stdscr)
+                elif selected == 2:
+                    self.display_filters_screen(stdscr)
+                elif selected == 3:
+                    self.edit_project_config(stdscr)
+                elif selected == 4:
+                    self.workbench.scan()
+                    self.status = "Rescanned DEV and TEST."
+                else:
+                    return
+
     def edit_project_config(self, stdscr: Any) -> None:
         if self.workbench.settings.dry_run:
             self.status = "Dry-run mode: project-config editing is disabled."
@@ -2226,6 +2548,14 @@ class Tui:
             "  Preview shows affected files, overlaps, TEST/DEV regexes, and nearby context.",
             "  ALWAYS REVIEWED keeps version/image/revision, replica/resource/security, and",
             "  added/removed/structural changes visible even when another regex would match.",
+            "",
+            "Main screen and Configure",
+            "  The footer condenses automatically on narrow terminals; no command is lost.",
+            "  Press c to open Configure for paths, patterns, display filters, config editing, and rescan.",
+            "  p, f, s, and x remain direct shortcuts for experienced users.",
+            "  Comparison Paths can change the project root or set exact DEV/TEST directories.",
+            "  Switching paths saves progress, updates .config-review.yaml, and rescans.",
+            "  Previously enabled patterns are disabled so the new comparison is never hidden automatically.",
             "",
             "Change navigation",
             "  j/k moves through active changes only in every diff view.",

@@ -61,6 +61,7 @@ from .core import (
     reconciled_handled_entries,
     record_handled_change,
     save_project_config,
+    save_project_paths,
     symlink_component,
 )
 from .rendering import (
@@ -216,6 +217,48 @@ class Workbench:
 
     def discard_saved_session(self) -> None:
         self.session.delete_saved()
+
+    def reconfigure_paths(self, source: Path, target: Path) -> int:
+        """Persist and switch roots, disabling old enabled patterns for safety."""
+        source = source.expanduser().resolve()
+        target = target.expanduser().resolve()
+        if not source.is_dir():
+            raise WorkbenchError(f"DEV/source directory does not exist: {source}")
+        if not target.is_dir():
+            raise WorkbenchError(f"TEST/target directory does not exist: {target}")
+        if source == target:
+            raise WorkbenchError("DEV/source and TEST/target must be different directories.")
+
+        save_project_paths(self.settings.config_file, source, target)
+        self.settings.source = source
+        self.settings.target = target
+        self.git_root = find_git_root(target)
+        self.initial_uncommitted = git_uncommitted_paths(self.git_root)
+        self.session = SessionStore(source, target, self.git_root)
+        self.resumed_session_label = None
+        self.records = []
+        self.records_by_path = {}
+        self._pattern_candidate_cache = None
+        self._protected_summary_cache = None
+        self._review_count_cache.clear()
+        self.reload_config()
+
+        disabled_patterns = sum(1 for rule in self.patterns if rule.enabled)
+        if disabled_patterns:
+            for rule in self.patterns:
+                rule.enabled = False
+            save_project_config(
+                self.settings.config_file,
+                self.patterns,
+                self.excluded_dirs,
+                self.hide_whitespace,
+                self.hide_mapping_order,
+                self.mute_non_focused,
+            )
+            self.reload_config()
+
+        self.scan(initial=True)
+        return disabled_patterns
 
     def review_counts(self, record: FileRecord) -> ReviewCounts:
         state_digest = hashlib.sha256()

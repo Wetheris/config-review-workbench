@@ -31,7 +31,9 @@ Tab completion is supported when Python `readline` is available.
 ### Main file list
 
 Files are grouped by their directory structure. Expand a file with Space to inspect
-its active-change index, or press Enter to open the full Focused Diff.
+its active-change index, or press Enter to open the full Focused Diff. The footer uses
+compact rows and automatically condenses on narrower terminals; press `c` to open the
+Configure menu when you need less-common actions.
 
 ![Main file list](docs/images/main-screen.png)
 
@@ -114,6 +116,20 @@ python3 config-review.pyz \
   --target /path/to/project/test
 ```
 
+### Changing comparison paths later
+
+Press `c` from the main file list and open **Comparison paths**. You can either:
+
+- choose a new project root and let the tool find one sibling DEV/TEST pair beneath it; or
+- set the exact DEV/source and TEST/target directories for a custom layout.
+
+When review progress exists, the workbench asks to save the current session before
+switching. The verified paths are then written to `.config-review.yaml`, the new
+project is rescanned immediately, and any saved session for that comparison can be
+loaded. Previously enabled project patterns are disabled during the switch so a new
+comparison is never hidden using approvals from a different path; review and enable
+them again from Pattern filters. Display settings remain project-configured.
+
 ## Basic walkthrough
 
 1. **Start the workbench.**
@@ -150,13 +166,27 @@ python3 config-review.pyz \
 | `Space` | Expand or collapse a file's change index |
 | `Enter` | Open the selected file or selected change |
 | `[` / `]` | Previous or next file |
-| `p` | Pattern Manager |
-| `f` | Display Filters |
+| `c` | Open Configure for comparison paths, patterns, display filters, config editing, and rescan |
+| `p` | Open Pattern Manager directly |
+| `f` | Open Display Filters directly |
 | `u` | Undo this run's changes for the selected file |
-| `s` | Rescan DEV and TEST |
-| `x` | Edit `.config-review.yaml` |
+| `s` | Rescan DEV and TEST directly |
+| `x` | Edit `.config-review.yaml` directly |
 | `?` | Help |
 | `q` | Quit |
+
+### Configure menu
+
+| Item | Purpose |
+|---|---|
+| Comparison paths | Change the project root or set exact DEV and TEST directories |
+| Pattern filters | Review and toggle project-wide noise filters |
+| Display filters | Control whitespace, YAML mapping-order, and focused contrast presentation |
+| Edit project config | Open `.config-review.yaml` in the configured editor |
+| Rescan | Refresh the current DEV and TEST directory trees |
+
+The direct `p`, `f`, `s`, and `x` shortcuts remain available, but the compact footer
+only advertises the most common navigation plus `c`, `?`, and `q` on small screens.
 
 ### Diff views
 

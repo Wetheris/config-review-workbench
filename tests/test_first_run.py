@@ -123,3 +123,65 @@ def test_pasting_dev_directory_uses_parent_project(tmp_path: Path, monkeypatch, 
 
     assert interactive_first_run_paths(tmp_path) == (source.resolve(), target.resolve())
     assert "Using parent project directory" in capsys.readouterr().out
+
+
+def test_workbench_can_switch_and_persist_comparison_paths(tmp_path: Path):
+    from config_review.core import AppSettings
+    from config_review.workbench import Workbench
+
+    first = tmp_path / "first"
+    first_source = first / "dev"
+    first_target = first / "test"
+    second = tmp_path / "second"
+    second_source = second / "dev"
+    second_target = second / "test"
+    for directory in (first_source, first_target, second_source, second_target):
+        (directory / "config").mkdir(parents=True)
+
+    (first_source / "config" / "app.yaml").write_text("value: dev-one\n")
+    (first_target / "config" / "app.yaml").write_text("value: test-one\n")
+    (second_source / "config" / "app.yaml").write_text("value: dev-two\n")
+    (second_target / "config" / "app.yaml").write_text("value: test-two\n")
+
+    config = tmp_path / ".config-review.yaml"
+    save_project_paths(config, first_source, first_target)
+    save_project_config(
+        config,
+        patterns=[
+            PatternRule(
+                id="old-project",
+                name="Old project environment",
+                test_regex="test-one",
+                dev_regex="dev-one",
+                files=(),
+                enabled=True,
+            )
+        ],
+        excluded_dirs={".git"},
+        hide_whitespace=True,
+        hide_mapping_order=False,
+        mute_non_focused=False,
+    )
+    workbench = Workbench(
+        AppSettings(
+            source=first_source,
+            target=first_target,
+            config_file=config,
+            context=4,
+            include_secrets=False,
+            edit_command="",
+            vimdiff_command="",
+            dry_run=False,
+        )
+    )
+
+    disabled_patterns = workbench.reconfigure_paths(second_source, second_target)
+
+    assert disabled_patterns == 1
+    assert all(not rule.enabled for rule in workbench.patterns)
+    assert workbench.settings.source == second_source.resolve()
+    assert workbench.settings.target == second_target.resolve()
+    assert load_project_path_settings(config) == ("second", "dev", "test")
+    assert [record.relative_path for record in workbench.records] == ["config/app.yaml"]
+    assert workbench.records[0].dev_text == "value: dev-two\n"
+    assert workbench.records[0].test_text == "value: test-two\n"
