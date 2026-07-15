@@ -312,6 +312,33 @@ def run_regression_tests() -> int:
                 test_named_list_move_is_one_logical_change,
             )
 
+            def test_visible_diff_report_scope() -> None:
+                (source / "report.yaml").write_text(
+                    "env:\n  - name: LOGGING_LEVEL_ROOT\n    value: DEBUG\n",
+                    encoding="utf-8",
+                )
+                (target / "report.yaml").write_text(
+                    "env:\n  - name: LOGGING_LEVEL_ROOT\n    value: INFO\n",
+                    encoding="utf-8",
+                )
+                workbench.scan()
+                record = workbench.records_by_path["report.yaml"]
+                report = workbench.generate_file_report(
+                    record,
+                    mode="focused",
+                    include_context_labels=True,
+                    include_git_context=False,
+                )
+                assert "Visible differences:** 1" in report
+                assert "Environment variable · LOGGING_LEVEL_ROOT" in report
+                assert "value: INFO" in report
+                assert "value: DEBUG" in report
+
+            check(
+                "visible-diff report exports the current file's focused changes",
+                test_visible_diff_report_scope,
+            )
+
     except (AssertionError, OSError, WorkbenchError) as exc:
         print(f"FAIL  {exc}", file=sys.stderr)
         print(f"{len(passed)} targeted regression test(s) passed before failure.", file=sys.stderr)

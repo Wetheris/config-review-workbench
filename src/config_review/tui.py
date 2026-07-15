@@ -155,6 +155,8 @@ _FOOTER_CATEGORIES = (
     "View:",
     "File:",
     "Actions:",
+    "Filters:",
+    "Report:",
     "Prev file:",
     "Next file:",
 )
@@ -204,6 +206,43 @@ def main_footer_lines(available_width: int) -> tuple[str, ...]:
             "[c]config  [?]help  [q]quit",
         )
     return ("[c]config  [?]help  [q]quit",)
+
+
+def detail_footer_lines(
+    available_width: int, *, mode: str, expand_filtered: bool
+) -> tuple[str, ...]:
+    """Return a non-clipping file-diff footer for the terminal width."""
+    view = "full diff" if mode == "focused" else "focused diff"
+    hidden = "collapse hidden" if expand_filtered else "expand hidden"
+    if available_width >= 110:
+        return (
+            "Navigate: [Arrows/PgUp/PgDn] scroll  [n/p] previous/next diff  "
+            "[ / ] Previous/next file",
+            f"View: [d]{view}  [h]{hidden}  [f]filters  [Enter]review  "
+            "[a]file actions  [?]help  [b]back  [q]quit",
+        )
+    if available_width >= 80:
+        return (
+            "[n/p] previous/next diff  [ / ] Previous/next file  [Arrows] navigate",
+            f"[Enter]review  [a]file actions  [f]filters  [d]{view}  [?]help  [q]quit",
+        )
+    if available_width >= 60:
+        return (
+            "[n/p] diff  [ / ] file  [Arrows/PgUp/PgDn] navigate",
+            "[Enter]open [a]actions [f]filters [d]view [?]help [q]quit",
+        )
+    if available_width >= 42:
+        return (
+            "[n/p]diff [ / ]file [Arrows]nav",
+            "[Ret]open [a]actions [f]filters",
+            "[d]view [?]help [b]back [q]quit",
+        )
+    return (
+        "[n/p]diff [ / ]file",
+        "[Ret]open [a]actions",
+        "[f]filters [d]view",
+        "[?]help [b]back [q]quit",
+    )
 
 
 def _directory_input(prompt: str) -> str:
@@ -280,7 +319,7 @@ class Tui:
     def __init__(self, workbench: Workbench) -> None:
         self.workbench = workbench
         self.selected = 0
-        self.status = ""
+        self.status = workbench.git_status.summary if workbench.git_status.warning else ""
         self.expanded_files: set[str] = set()
         self.main_selection_key: tuple[str, str, int | None] | None = None
         self.pending_change_index: int | None = None
@@ -625,13 +664,19 @@ class Tui:
                 stdscr,
                 3,
                 2,
-                f"Patterns hidden: {enabled_count} · display filters: "
+                f"Noise filters hidden: {enabled_count} · display options: "
                 f"whitespace {whitespace_text}, YAML order {mapping_text}",
                 self._color_pair(3),
             )
+            git_attr = (
+                self._color_pair(3) | curses.A_BOLD
+                if self.workbench.git_status.warning
+                else self._color_pair(2)
+            )
+            self._add(stdscr, 4, 2, self.workbench.git_status.summary, git_attr)
             self._add(
                 stdscr,
-                4,
+                5,
                 2,
                 self.workbench.session_status_text,
                 self._color_pair(4),
@@ -647,19 +692,19 @@ class Tui:
             summary_attr = self._color_pair(2) | curses.A_BOLD if remaining == 0 else 0
             self._add(
                 stdscr,
-                5,
+                6,
                 2,
                 f"Files: {len(records)} · {remaining_text} · Complete: {complete} · "
                 f"Filtered only: {filtered_only}",
                 summary_attr,
             )
 
-            self._add(stdscr, 7, 2, "STATUS", curses.A_BOLD)
-            self._add(stdscr, 7, 34, "SESSION", curses.A_BOLD)
-            self._add(stdscr, 7, 58, "FILE / CHANGE INDEX", curses.A_BOLD)
-            self._add(stdscr, 8, 2, "─" * max(1, width - 4), self._color_pair(4))
+            self._add(stdscr, 8, 2, "STATUS", curses.A_BOLD)
+            self._add(stdscr, 8, 34, "SESSION", curses.A_BOLD)
+            self._add(stdscr, 8, 58, "FILE / CHANGE INDEX", curses.A_BOLD)
+            self._add(stdscr, 9, 2, "─" * max(1, width - 4), self._color_pair(4))
 
-            list_top = 9
+            list_top = 10
             footer_lines = main_footer_lines(max(1, width - 4))
             list_height = max(1, height - list_top - len(footer_lines) - 1)
             display_rows = self._main_rows(records)
@@ -775,7 +820,7 @@ class Tui:
             if not records:
                 self._add(
                     stdscr,
-                    10,
+                    11,
                     2,
                     "No DEV/TEST differences or review history remain.",
                     self._color_pair(2),
@@ -834,12 +879,13 @@ class Tui:
                     return "open"
             elif key in (ord("s"), ord("S")):
                 self.workbench.scan()
-                self.status = "Rescanned DEV and TEST."
+                self.workbench.refresh_git_status(fetch_remote=True)
+                self.status = "Rescanned DEV and TEST. " + self.workbench.git_status.summary
             elif key in (ord("u"), ord("U")) and records:
                 record = records[self.selected]
                 if not self.confirm(
                     stdscr,
-                    "Undo this run's file edits and review progress? Project patterns stay unchanged.",
+                    "Undo this run's file edits and review progress? Noise filters stay unchanged.",
                 ):
                     continue
                 changed, message, needs_confirmation = self.workbench.undo_session_changes(record)
@@ -852,7 +898,7 @@ class Tui:
             elif key in (ord("p"), ord("P")) and records:
                 self.pattern_manager_screen(stdscr)
             elif key in (ord("f"), ord("F")):
-                self.display_filters_screen(stdscr)
+                self.filters_screen(stdscr)
             elif key in (ord("c"), ord("C")):
                 self.configure_screen(stdscr)
             elif key in (ord("x"), ord("X")):
@@ -1087,7 +1133,7 @@ class Tui:
                 mode_note = (
                     f"{presentation.visible_change_count} active · "
                     f"{presentation.handled_count} handled · "
-                    f"{pattern_hidden} pattern-hidden · {whitespace_hidden} whitespace-hidden · "
+                    f"{pattern_hidden} noise-hidden · {whitespace_hidden} whitespace-hidden · "
                     f"{hidden_state}."
                 )
                 mapping_note = mapping_state
@@ -1138,7 +1184,7 @@ class Tui:
             if presentation.visible_change_count and selected_block is not None:
                 progress_note = (
                     f"ACTIVE CHANGE {selected_change + 1}/{presentation.visible_change_count} · "
-                    "[j] next · [k] previous"
+                    "[n] next · [p] previous"
                 )
             elif mode == "focused":
                 if presentation.handled_count:
@@ -1165,8 +1211,11 @@ class Tui:
             content = presentation.lines
             stdscr.erase()
             height, width = stdscr.getmaxyx()
+            footer_lines = detail_footer_lines(
+                max(1, width - 2), mode=mode, expand_filtered=expand_filtered
+            )
             body_top = 7
-            body_height = max(1, height - body_top - 4)
+            body_height = max(1, height - body_top - len(footer_lines) - 1)
             max_scroll = max(0, len(content) - body_height)
             selected_body_range = selected_diff_body_range(presentation)
             max_horizontal = maximum_horizontal_offset(
@@ -1255,33 +1304,9 @@ class Tui:
                     selected_guide=selected_guide,
                 )
 
-            if mode == "focused":
-                hidden_action = "[h]collapse hidden" if expand_filtered else "[h]expand hidden"
-                view_actions = f"[d]full diff  {hidden_action}  [f]display filters  [g]patterns"
-            else:
-                view_actions = "[d]focused diff  [f]display filters  [g]patterns"
-            if record.resolved_mode == "manual":
-                completion_action = "[m]reopen file"
-            elif focused_counts.active:
-                completion_action = "[m]mark complete"
-            else:
-                completion_action = ""
-            actions = f"Navigate: [j/k]change  [Enter]review  View: {view_actions}"
-            navigation_parts = [
-                completion_action,
-                "[u]undo session changes",
-                "[x]file actions",
-                "Prev file: [",
-                "Next file: ]",
-                "[b]ack",
-                "[↑/↓]scroll",
-                "[←/→]horizontal",
-                "[?]help",
-                "[q]quit",
-            ]
-            navigation = "File: " + "  ".join(item for item in navigation_parts if item)
-            self._draw_footer(stdscr, height - 3, 1, actions)
-            self._draw_footer(stdscr, height - 2, 1, navigation)
+            footer_top = height - len(footer_lines) - 1
+            for footer_row, footer_text in enumerate(footer_lines):
+                self._draw_footer(stdscr, footer_top + footer_row, 1, footer_text)
             self._add(stdscr, height - 1, 1, self.status, self._color_pair(3))
             stdscr.refresh()
 
@@ -1305,11 +1330,12 @@ class Tui:
                     else "Hidden blocks collapsed."
                 )
             elif key in (ord("f"), ord("F")):
-                self.display_filters_screen(stdscr)
+                self.filters_screen(stdscr)
                 scroll = horizontal = 0
                 selected_change = 0
                 jump_to_selected = True
             elif key in (ord("g"), ord("G")):
+                # Backward-compatible shortcut for the former Patterns command.
                 self.pattern_manager_screen(stdscr)
                 scroll = horizontal = 0
                 selected_change = 0
@@ -1352,7 +1378,7 @@ class Tui:
             elif key in (ord("u"), ord("U")):
                 if not self.confirm(
                     stdscr,
-                    "Undo this run's file edits and review progress? Project patterns stay unchanged.",
+                    "Undo this run's file edits and review progress? Noise filters stay unchanged.",
                 ):
                     continue
                 changed, message, needs_confirmation = self.workbench.undo_session_changes(record)
@@ -1366,22 +1392,22 @@ class Tui:
                     selected_change = 0
                     scroll = horizontal = 0
                     jump_to_selected = True
-            elif key in (ord("x"), ord("X")):
-                file_result = self.file_actions_menu(stdscr, record)
+            elif key in (ord("a"), ord("A"), ord("x"), ord("X")):
+                file_result = self.file_actions_menu(stdscr, record, mode=mode)
                 if file_result == "quit":
                     return "quit"
                 if file_result == "changed":
                     scroll = horizontal = 0
                     selected_change = 0
                     jump_to_selected = True
-            elif key in (ord("j"), ord("J")):
+            elif key in (ord("n"), ord("N"), ord("j"), ord("J")):
                 count = presentation.visible_change_count
                 if count:
                     selected_change = (selected_change + 1) % count
                     jump_to_selected = True
                 else:
                     self.status = "No changes to step through in this view."
-            elif key in (ord("k"), ord("K")):
+            elif key in (ord("p"), ord("P"), ord("k"), ord("K")):
                 count = presentation.visible_change_count
                 if count:
                     selected_change = (selected_change - 1) % count
@@ -1413,6 +1439,55 @@ class Tui:
             elif key == ord("?"):
                 self.help_screen(stdscr)
 
+    def filters_screen(self, stdscr: Any) -> None:
+        """Group noise filtering and display-only options under one user-facing menu."""
+        items = [
+            (
+                "Noise filters",
+                "Review repeated environment, domain, endpoint, and other project noise.",
+            ),
+            (
+                "Display options",
+                "Control whitespace, safe YAML order noise, and focused contrast.",
+            ),
+            ("Back", "Return to the diff or Configure screen."),
+        ]
+        selected = 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            self._add(stdscr, 1, 2, "FILTERS", curses.A_BOLD | self._color_pair(5))
+            self._add(
+                stdscr,
+                3,
+                2,
+                "Focused Diff only; Full Diff always shows the literal TEST and DEV text.",
+                self._color_pair(3),
+            )
+            for index, (label, description) in enumerate(items):
+                y = 6 + index * 2
+                marker_text = "▶" if index == selected else " "
+                attr = curses.A_REVERSE | curses.A_BOLD if index == selected else curses.A_BOLD
+                self._add(stdscr, y, 4, f"{marker_text} {label}", attr)
+                if width >= 64:
+                    self._add(stdscr, y + 1, 7, description, curses.A_DIM)
+            self._draw_footer(stdscr, height - 1, 1, "Navigate: [↑/↓]select  [Enter]open  [b]ack")
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("b"), ord("B"), 27, ord("q"), ord("Q")):
+                return
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(items)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(items)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if selected == 0:
+                    self.pattern_manager_screen(stdscr)
+                elif selected == 1:
+                    self.display_filters_screen(stdscr)
+                else:
+                    return
+
     def display_filters_screen(self, stdscr: Any) -> None:
         selected = 0
         options = (
@@ -1434,7 +1509,7 @@ class Tui:
         while True:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
-            self._add(stdscr, 0, 2, "DISPLAY FILTERS", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 0, 2, "DISPLAY OPTIONS", curses.A_BOLD | self._color_pair(5))
             self._add(
                 stdscr,
                 1,
@@ -1515,12 +1590,12 @@ class Tui:
 
             stdscr.erase()
             height, width = stdscr.getmaxyx()
-            self._add(stdscr, 0, 2, "PROJECT PATTERN MANAGER", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 0, 2, "NOISE FILTERS", curses.A_BOLD | self._color_pair(5))
             self._add(
                 stdscr,
                 1,
                 2,
-                f"Scanned {len(self.workbench.records)} changed file(s). Patterns apply project-wide.",
+                f"Scanned {len(self.workbench.records)} changed file(s). Noise filters apply project-wide.",
                 self._color_pair(4) | curses.A_BOLD,
             )
             display_state = (
@@ -1539,15 +1614,15 @@ class Tui:
                 stdscr,
                 3,
                 2,
-                f"Display filters: {display_state}. "
-                "ALWAYS REVIEWED changes cannot be hidden by patterns.",
+                f"Display options: {display_state}. "
+                "ALWAYS REVIEWED changes cannot be hidden by noise filters.",
                 self._color_pair(3),
             )
             self._add(stdscr, 5, 2, "STATE", curses.A_BOLD)
             self._add(stdscr, 5, 14, "MATCHES", curses.A_BOLD)
             self._add(stdscr, 5, 24, "FILES", curses.A_BOLD)
             self._add(stdscr, 5, 32, "OVERLAP", curses.A_BOLD)
-            self._add(stdscr, 5, 42, "CATEGORY / PATTERN", curses.A_BOLD)
+            self._add(stdscr, 5, 42, "CATEGORY / FILTER", curses.A_BOLD)
             self._add(stdscr, 6, 2, "─" * max(1, width - 4), self._color_pair(4))
 
             list_top = 7
@@ -1621,7 +1696,7 @@ class Tui:
                     stdscr,
                     8,
                     2,
-                    "No repeated project-wide replacement patterns were found.",
+                    "No repeated project-wide noise filters were found.",
                     self._color_pair(3),
                 )
 
@@ -1635,7 +1710,7 @@ class Tui:
                 stdscr,
                 height - 2,
                 1,
-                "Actions: [f]display filters  [x]project config  [b]ack",
+                "Actions: [f]display options  [x]project config  [b]ack",
             )
             self._add(stdscr, height - 1, 1, self.status, self._color_pair(3))
             stdscr.refresh()
@@ -1673,9 +1748,9 @@ class Tui:
                     enable = not members or not all(candidate.rule.enabled for candidate in members)
                     _, self.status = self.workbench.set_category_patterns(item.category, enable)
                 else:
-                    self.status = "ALWAYS REVIEWED changes cannot be hidden by pattern filters."
+                    self.status = "ALWAYS REVIEWED changes cannot be hidden by noise filters."
             elif key in (ord("f"), ord("F")):
-                self.display_filters_screen(stdscr)
+                self.filters_screen(stdscr)
             elif key in (ord("x"), ord("X")):
                 self.edit_project_config(stdscr)
 
@@ -1705,7 +1780,7 @@ class Tui:
                     "summary",
                 ),
                 DisplayLine(
-                    "Pattern suggestions never hide these changes. Full Diff and Focused Diff "
+                    "Noise filters never hide these changes. Full Diff and Focused Diff "
                     "both keep them visible.",
                     "summary",
                 ),
@@ -1888,7 +1963,7 @@ class Tui:
 
             stdscr.erase()
             height, _ = stdscr.getmaxyx()
-            self._add(stdscr, 0, 2, "PROJECT PATTERN PREVIEW", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 0, 2, "NOISE FILTER PREVIEW", curses.A_BOLD | self._color_pair(5))
             body_top = 2
             body_height = max(1, height - body_top - 3)
             max_scroll = max(0, len(lines) - body_height)
@@ -2020,14 +2095,14 @@ class Tui:
                 stdscr,
                 height - 3,
                 1,
-                "Edit: [p]ull DEV + edit  [e]dit TEST  [v]vimdiff",
+                "Edit: [l]pull DEV + edit  [e]dit TEST  [v]vimdiff",
             )
             self._draw_footer(
                 stdscr,
                 height - 2,
                 1,
-                "Navigate: [j/k]change  Prev file: [  Next file: ]  "
-                "[↑/↓ or PgUp/PgDn]scroll  [←/→]horizontal  [b]ack  [q]uit",
+                "Navigate: [n/p] previous/next diff  [ / ] Previous/next file  "
+                "[Arrows/PgUp/PgDn] navigate  [b]ack  [q]uit",
             )
             self._add(stdscr, height - 1, 1, self.status, self._color_pair(3))
             stdscr.refresh()
@@ -2037,12 +2112,12 @@ class Tui:
                 return ReviewMenuResult(selected_change, changed=changed_any, quit=True)
             if key in (ord("b"), ord("B"), 27):
                 return ReviewMenuResult(selected_change, changed=changed_any)
-            if key in (ord("j"), ord("J")):
+            if key in (ord("n"), ord("N"), ord("j"), ord("J")):
                 selected_change = (selected_change + 1) % count
                 horizontal = 0
                 preview_scroll = 0
                 continue
-            if key in (ord("k"), ord("K")):
+            if key in (ord("p"), ord("P"), ord("k"), ord("K")):
                 selected_change = (selected_change - 1) % count
                 horizontal = 0
                 preview_scroll = 0
@@ -2078,7 +2153,7 @@ class Tui:
                 horizontal = 0
                 preview_scroll = 0
                 continue
-            if key in (ord("p"), ord("P")):
+            if key in (ord("l"), ord("L")):
                 changed = self.run_change_external(
                     stdscr,
                     record,
@@ -2129,35 +2204,307 @@ class Tui:
                 # index naturally selects the next remaining active change.
                 continue
 
-    def file_actions_menu(self, stdscr: Any, record: FileRecord) -> str:
+    def _open_report_in_editor(
+        self,
+        stdscr: Any,
+        record: FileRecord,
+        *,
+        mode: str,
+        include_context_labels: bool,
+        include_git_context: bool,
+    ) -> None:
+        command = parse_editor_command(self.workbench.settings.edit_command)
+        if not command:
+            self.status = "No edit command configured."
+            return
+        try:
+            path = self.workbench.save_file_report(
+                record,
+                mode=mode,
+                include_context_labels=include_context_labels,
+                include_git_context=include_git_context,
+            )
+        except (OSError, WorkbenchError) as exc:
+            self.status = f"Could not create report: {exc}"
+            return
+        command.append(str(path))
+        curses.def_prog_mode()
+        curses.endwin()
+        try:
+            code = subprocess.run(command, check=False).returncode
+            self.status = f"Report editor exited with status {code}; saved to {path}."
+        except OSError as exc:
+            self.status = f"Could not open report editor: {exc}"
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+    def _print_report(
+        self,
+        stdscr: Any,
+        record: FileRecord,
+        *,
+        mode: str,
+        include_context_labels: bool,
+        include_git_context: bool,
+    ) -> None:
+        report = self.workbench.generate_file_report(
+            record,
+            mode=mode,
+            include_context_labels=include_context_labels,
+            include_git_context=include_git_context,
+        )
+        curses.def_prog_mode()
+        curses.endwin()
+        try:
+            print("\n" + report)
+            input("\nPress Enter to return to Config Review Workbench...")
+            self.status = "Printed the visible-diff report to the terminal."
+        except (EOFError, KeyboardInterrupt):
+            self.status = "Returned from the terminal report."
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+
+    def report_options_screen(self, stdscr: Any, record: FileRecord, *, mode: str) -> None:
+        include_context_labels = True
+        include_git_context = True
+        selected = 0
         while True:
+            presentation = self.workbench._report_presentation(record, mode)
+            view_name = "Full Diff" if mode == "full" else "Focused Diff"
+            items = [
+                (
+                    "toggle_labels",
+                    "Context labels",
+                    "Add deterministic labels such as environment variable, routing, resources, or security.",
+                ),
+                (
+                    "toggle_git",
+                    "Git commit context",
+                    "Use line-level blame when possible and fall back to the latest commit touching the file.",
+                ),
+                (
+                    "open",
+                    "Open report in editor",
+                    "Save the Markdown report locally and open it with the configured editor.",
+                ),
+                ("save", "Save report", "Write the Markdown report under .config-review-reports/."),
+                (
+                    "print",
+                    "Print report to terminal",
+                    "Show the entire report in the terminal for copying or piping.",
+                ),
+                ("back", "Back", "Return to File Actions."),
+            ]
             stdscr.erase()
-            height, _ = stdscr.getmaxyx()
+            height, width = stdscr.getmaxyx()
+            self._add(stdscr, 0, 2, "VISIBLE-DIFF REPORT", curses.A_BOLD | self._color_pair(5))
+            self._add(
+                stdscr,
+                2,
+                2,
+                f"{record.relative_path} · {view_name} · "
+                f"{presentation.visible_change_count} selectable difference(s)",
+                self._color_pair(3) | curses.A_BOLD,
+            )
+            scope = (
+                "Focused report omits hidden noise and handled changes."
+                if mode == "focused"
+                else "Full report includes literal text differences from Full Diff."
+            )
+            self._add(stdscr, 3, 2, scope, curses.A_DIM)
+            for index, (kind, label, description) in enumerate(items):
+                y = 6 + index * 2
+                marker = "▶" if index == selected else " "
+                attr = curses.A_REVERSE | curses.A_BOLD if index == selected else curses.A_BOLD
+                if kind == "toggle_labels":
+                    label = f"[{'x' if include_context_labels else ' '}] {label}"
+                elif kind == "toggle_git":
+                    label = f"[{'x' if include_git_context else ' '}] {label}"
+                self._add(stdscr, y, 4, f"{marker} {label}", attr)
+                if width >= 80:
+                    self._add(stdscr, y + 1, 8, description, curses.A_DIM)
+            self._draw_footer(
+                stdscr,
+                height - 1,
+                1,
+                "Navigate: [↑/↓]select  [Space]toggle option  [Enter]open  [b]ack",
+            )
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("b"), ord("B"), 27, ord("q"), ord("Q")):
+                return
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(items)
+                continue
+            if key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(items)
+                continue
+            kind = items[selected][0]
+            if key == ord(" "):
+                if kind == "toggle_labels":
+                    include_context_labels = not include_context_labels
+                elif kind == "toggle_git":
+                    include_git_context = not include_git_context
+                continue
+            if key not in (curses.KEY_ENTER, 10, 13):
+                continue
+            if kind == "toggle_labels":
+                include_context_labels = not include_context_labels
+            elif kind == "toggle_git":
+                include_git_context = not include_git_context
+            elif kind == "open":
+                self._open_report_in_editor(
+                    stdscr,
+                    record,
+                    mode=mode,
+                    include_context_labels=include_context_labels,
+                    include_git_context=include_git_context,
+                )
+            elif kind == "save":
+                try:
+                    path = self.workbench.save_file_report(
+                        record,
+                        mode=mode,
+                        include_context_labels=include_context_labels,
+                        include_git_context=include_git_context,
+                    )
+                    self.status = f"Saved visible-diff report to {path}."
+                except (OSError, WorkbenchError) as exc:
+                    self.status = f"Could not save report: {exc}"
+            elif kind == "print":
+                self._print_report(
+                    stdscr,
+                    record,
+                    mode=mode,
+                    include_context_labels=include_context_labels,
+                    include_git_context=include_git_context,
+                )
+            else:
+                return
+
+    def file_actions_menu(self, stdscr: Any, record: FileRecord, *, mode: str) -> str:
+        selected = 0
+        while True:
+            self.workbench.refresh_record(record)
+            _status, counts = self.workbench.file_status(record)
+            if record.resolved_mode == "manual":
+                completion_label = "Reopen file for review"
+                completion_description = (
+                    "Remove the manual-complete state and return active differences to review."
+                )
+            elif counts.active:
+                completion_label = "Mark file complete"
+                completion_description = (
+                    f"Mark done manually with {counts.active} active difference(s) remaining."
+                )
+            else:
+                completion_label = "File is already complete"
+                completion_description = "No active differences remain to mark complete."
+
             if record.test_symlink_path:
-                copy_label = "[c] Write disabled: TEST path contains a symlink"
+                copy_label = "Write disabled: TEST path contains a symlink"
             else:
                 copy_label = (
-                    "[c] Copy the complete DEV file to TEST"
+                    "Copy the complete DEV file to TEST"
                     if record.dev_exists
-                    else "[c] Delete TEST because DEV is absent"
+                    else "Delete TEST because DEV is absent"
                 )
-            lines = [
-                "FILE ACTIONS",
-                "",
-                copy_label,
-                "[b] Back",
+
+            items = [
+                ("REVIEW", "complete", completion_label, completion_description),
+                (
+                    "REVIEW",
+                    "undo",
+                    "Undo this run's file changes",
+                    "Restore TEST to the session-start copy and clear this file's review progress.",
+                ),
+                (
+                    "REPORT",
+                    "report",
+                    "Visible-diff report",
+                    "Report only the current file's selectable differences from the current diff view.",
+                ),
+                (
+                    "WHOLE FILE",
+                    "copy",
+                    copy_label,
+                    "Replace the entire TEST file from DEV; separate from selected-change actions.",
+                ),
+                ("NAVIGATION", "back", "Back", "Return to the file diff."),
             ]
-            top = max(1, (height - len(lines)) // 2)
-            self._add(stdscr, top, 4, lines[0], curses.A_BOLD | self._color_pair(5))
-            self._draw_footer(stdscr, top + 2, 4, lines[2])
-            self._draw_footer(stdscr, top + 3, 4, lines[3])
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            self._add(stdscr, 0, 2, "FILE ACTIONS", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 2, 2, record.relative_path, self._color_pair(3) | curses.A_BOLD)
+            y = 4
+            previous_section = ""
+            for index, (section, _kind, label, description) in enumerate(items):
+                if section != previous_section:
+                    self._add(stdscr, y, 2, section, curses.A_BOLD | self._color_pair(5))
+                    y += 1
+                    previous_section = section
+                marker = "▶" if index == selected else " "
+                attr = curses.A_REVERSE | curses.A_BOLD if index == selected else curses.A_BOLD
+                self._add(stdscr, y, 4, f"{marker} {label}", attr)
+                if width >= 82:
+                    self._add(stdscr, y, 34, description, curses.A_DIM)
+                y += 1
+            if width < 82 and height - 3 > y:
+                self._add(stdscr, height - 3, 4, items[selected][3], curses.A_DIM)
+            self._draw_footer(
+                stdscr,
+                height - 1,
+                1,
+                "Navigate: [↑/↓]select  [Enter]open  [b]ack",
+            )
             stdscr.refresh()
             key = stdscr.getch()
             if key in (ord("q"), ord("Q")):
                 return "quit"
             if key in (ord("b"), ord("B"), 27):
                 return "back"
-            if key in (ord("c"), ord("C")):
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(items)
+                continue
+            if key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(items)
+                continue
+            if key not in (curses.KEY_ENTER, 10, 13):
+                continue
+            kind = items[selected][1]
+            if kind == "complete":
+                if record.resolved_mode == "manual":
+                    self.workbench.mark_complete(record, False)
+                    self.status = "Reopened the file for review."
+                    return "changed"
+                if counts.active:
+                    updated = self.workbench.mark_complete(record, True)
+                    self.status = f"Marked done manually with {updated.active} active diff(s)."
+                    return "changed"
+                self.status = "No active diffs remain; this file is already complete."
+            elif kind == "undo":
+                if not self.confirm(
+                    stdscr,
+                    "Undo this run's file edits and review progress? Noise filters stay unchanged.",
+                ):
+                    continue
+                changed, message, needs_confirmation = self.workbench.undo_session_changes(record)
+                if needs_confirmation and self.confirm(
+                    stdscr,
+                    "TEST changed outside the tool. Restore the session-start copy anyway?",
+                ):
+                    changed, message, _ = self.workbench.undo_session_changes(record, force=True)
+                self.status = message
+                if changed:
+                    return "changed"
+            elif kind == "report":
+                self.report_options_screen(stdscr, record, mode=mode)
+            elif kind == "copy":
+                if record.test_symlink_path:
+                    self.status = "Write disabled because the TEST path contains a symlink."
+                    continue
                 prompt = "Replace TEST with the complete DEV file?"
                 if not record.dev_exists:
                     prompt = "DEV file is absent. Delete the TEST file?"
@@ -2168,6 +2515,8 @@ class Tui:
                 _, message = self.workbench.copy_dev_to_test(record)
                 self.status = message
                 return "changed"
+            else:
+                return "back"
 
     def blocked_apply_screen(
         self,
@@ -2353,7 +2702,9 @@ class Tui:
         self.pending_open_review = False
         self.status = f"Switched comparison to {source.name} → {target.name}."
         if disabled_patterns:
-            self.status += f" Disabled {disabled_patterns} saved pattern(s); review them again."
+            self.status += (
+                f" Disabled {disabled_patterns} saved noise filter(s); review them again."
+            )
         if self.workbench.session.has_saved:
             self.startup_saved_session_screen(stdscr)
         return True
@@ -2460,13 +2811,8 @@ class Tui:
             ),
             (
                 "FILTERING",
-                "Pattern filters",
-                "Review auto-hidden project-wide environment and noise patterns.",
-            ),
-            (
-                "FILTERING",
-                "Display filters",
-                "Control whitespace, safe YAML order noise, and focused contrast.",
+                "Filters",
+                "Review noise filters and display options in one submenu.",
             ),
             (
                 "PROJECT",
@@ -2531,14 +2877,13 @@ class Tui:
                 if selected == 0:
                     self.comparison_paths_screen(stdscr)
                 elif selected == 1:
-                    self.pattern_manager_screen(stdscr)
+                    self.filters_screen(stdscr)
                 elif selected == 2:
-                    self.display_filters_screen(stdscr)
-                elif selected == 3:
                     self.edit_project_config(stdscr)
-                elif selected == 4:
+                elif selected == 3:
                     self.workbench.scan()
-                    self.status = "Rescanned DEV and TEST."
+                    self.workbench.refresh_git_status(fetch_remote=True)
+                    self.status = "Rescanned DEV and TEST. " + self.workbench.git_status.summary
                 else:
                     return
 
@@ -2569,7 +2914,7 @@ class Tui:
             self.workbench.scan()
             self.status = (
                 f"Project config editor exited with status {code}; "
-                f"loaded {len(self.workbench.patterns)} saved pattern(s)."
+                f"loaded {len(self.workbench.patterns)} saved noise filter(s)."
             )
         except (OSError, WorkbenchError) as exc:
             self.status = f"Could not edit/reload project config: {exc}"
@@ -2581,74 +2926,58 @@ class Tui:
         lines = [
             "CONFIG REVIEW WORKBENCH HELP",
             "",
-            "The tool compares YAML as text. It does not infer Kubernetes meaning, moves,",
-            "equivalence, safety, priority, or whether a change should be promoted.",
+            "The raw comparison is text-based and does not decide whether a change is safe",
+            "or should be promoted. Focused Diff adds only conservative filtering and alignment.",
             "",
-            "Focused Diff",
-            "  Collapses qualifying project noise by default; saved choices override it.",
-            "  Press f for Display Filters: whitespace, YAML order, and focused contrast.",
-            "  YAML order filtering hides safe scalar mapping moves and unique name-keyed list moves.",
-            "  Changed named items, templates, invalid YAML, and ambiguous moves remain visible.",
-            "  Collapsed blocks remain visible as one filtered marker line.",
-            "  Mute non-focused diff content softens surrounding/expanded filtered content only.",
-            "  Press h to expand/collapse hidden blocks.",
-            "  TEST/current line numbers are red; DEV/incoming line numbers are green.",
+            "Focused Diff and Full Diff",
+            "  Focused Diff collapses qualifying noise, whitespace, safe YAML order moves,",
+            "  handled changes, and unique name-keyed list moves.",
+            "  Full Diff always shows the literal TEST/current and DEV/incoming text.",
+            "  Press f for Filters, then choose Noise filters or Display options.",
+            "  Press h to expand/collapse hidden blocks and d to switch diff views.",
             "",
-            "Full Diff",
-            "  Always shows the original TEST and DEV text with no pattern or display filtering.",
-            "",
-            "Pattern Manager",
-            "  Groups project-wide suggestions into Environment identity, Application domains,",
-            "  Endpoints, Users/references, Storage/data, and Other repeated values.",
-            "  Space toggles one pattern or every pattern in the selected category.",
-            "  Broad suggestions require more examples; none are hidden without your approval.",
-            "  Preview shows affected files, overlaps, TEST/DEV regexes, and nearby context.",
-            "  ALWAYS REVIEWED keeps version/image/revision, replica/resource/security, and",
-            "  added/removed/structural changes visible even when another regex would match.",
-            "",
-            "Main screen and Configure",
-            "  The footer condenses automatically on narrow terminals; no command is lost.",
-            "  Press c to open Configure for paths, patterns, display filters, config editing, and rescan.",
-            "  p, f, s, and x remain direct shortcuts for experienced users.",
-            "  Comparison Paths can change the project root or set exact DEV/TEST directories.",
-            "  Switching paths saves progress, updates .config-review.yaml, and rescans.",
-            "  Previously enabled patterns are disabled so the new comparison is never hidden automatically.",
-            "",
-            "Change navigation",
-            "  j/k moves through active changes only in every diff view.",
+            "Navigation",
+            "  n/p moves to the next/previous active difference.",
             "  [ moves to the previous file and ] moves to the next file.",
-            "  Enter opens a compact current-change panel with real TEST/DEV line numbers.",
-            "  Arrow keys scroll the current screen; they do not change the selected diff.",
+            "  Arrow keys and Page Up/Page Down navigate the current view.",
+            "  Enter opens the selected-difference action panel.",
+            "  The footer wraps into additional rows on narrow terminals instead of clipping.",
             "",
-            "File list and states",
-            "  Files are grouped generically by their first two parent directories.",
-            "  Yellow means active diffs; green COMPLETE means every visible diff was handled.",
-            "  Cyan DEV ONLY is an incoming file; red TEST ONLY is absent from incoming DEV.",
-            "  Gray FILTERED ONLY means only approved hidden differences remain.",
-            "  Magenta DONE MANUALLY means the file was marked done with active diffs remaining.",
-            "  UNCOMMITTED: TEST already had Git changes when this run opened.",
-            "  EDITED: TEST content changed during this run.",
-            "  SYMLINK: the TEST path is viewable, but every TEST write action is blocked.",
+            "Filters",
+            "  Noise filters group repeated environment, domain, endpoint, user, and storage",
+            "  replacements. Category rows start collapsed and suggestions start hidden.",
+            "  Space hides/shows a filter or category; Enter expands or previews it.",
+            "  ALWAYS REVIEWED keeps versions, images, resources, security, additions,",
+            "  removals, structural changes, and ambiguous YAML visible.",
+            "  Display options control whitespace, safe YAML order handling, and contrast.",
             "",
-            "Workflows",
-            "  Accept DEV applies the exact selected incoming block immediately, with no editor.",
-            "  Pull DEV + edit applies that exact block first, then opens TEST for adaptation.",
-            "  Both actions refuse safely when the current TEST hunk cannot be revalidated.",
-            "  A refused apply leaves TEST untouched and the change active; refresh or use vimdiff.",
-            "  Edit TEST and vimdiff open near the selected change when the editor supports it.",
-            "  Keep TEST moves the selected block out of the active queue without editing TEST.",
-            "  Any selected block changed through pull/edit/vimdiff also moves to session history.",
-            "  Focused Diff collapses handled blocks in magenta; Full Diff still shows real text.",
-            "  Resolved-away handled blocks remain in SESSION HISTORY for the current run.",
-            "  Files become COMPLETE after every visible change is handled; filter-only files stay FILTERED ONLY.",
-            "  Undo Session Changes restores TEST to this run's starting state and clears review progress.",
-            "  Project-wide pattern settings are not changed by Undo Session Changes.",
-            "  Undo is memory-only, preserves pre-existing uncommitted work, and is unavailable after exit.",
-            "  Exact undo bytes are captured lazily before the first write and verified against startup SHA-256.",
-            "  Review status is saved automatically when the workbench exits.",
-            "  The saved review records branch, commit, timestamp, paths, and file fingerprints.",
-            "  On launch, answer Yes to load it or No to delete it and start fresh.",
-            "  File actions contains only the whole-file DEV→TEST copy/delete operation.",
+            "File Actions",
+            "  Press a from a file diff to open manual complete/reopen, current-run undo,",
+            "  visible-diff report, and whole-file DEV-to-TEST copy/delete actions.",
+            "  The report includes only selectable differences from the current file view.",
+            "  Optional context labels are deterministic and offline; they do not infer intent.",
+            "  Optional Git context uses line blame, then falls back to the latest file commit.",
+            "  Reports can be opened in the editor, saved under .config-review-reports,",
+            "  or printed to the terminal.",
+            "",
+            "Selected-change actions",
+            "  Accept DEV applies the exact incoming block immediately.",
+            "  [l]pull DEV + edit applies the block and opens TEST for adaptation.",
+            "  Edit TEST and vimdiff open near the selected change.",
+            "  Keep TEST moves the selected block to session history without editing TEST.",
+            "  Every write is revalidated; ambiguous or externally changed content is refused.",
+            "",
+            "Git freshness",
+            "  Startup performs a bounded, non-interactive git fetch when an upstream exists.",
+            "  The main screen shows ahead/behind, clean/dirty, or remote-unverified status.",
+            "  The check never pulls, merges, resets, checks out, or edits tracked files.",
+            "  Rescan repeats both the DEV/TEST scan and the Git freshness check.",
+            "",
+            "Sessions and safety",
+            "  Review status is saved automatically on exit without storing raw diff values.",
+            "  Current-run undo restores the verified startup bytes and keeps noise filters.",
+            "  Symlinked TEST paths remain viewable but all TEST writes are blocked.",
+            "  .config-review.yaml is local and is not overwritten by pulling a new build.",
             "",
             "Press any key to return.",
         ]

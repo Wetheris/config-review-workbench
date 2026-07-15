@@ -516,6 +516,62 @@ class MainListRow:
 
 
 @dataclass(slots=True)
+class GitRepositoryStatus:
+    """Best-effort freshness and working-tree state for the comparison repository."""
+
+    root: Path | None
+    branch: str = "no-git"
+    commit: str = ""
+    upstream: str = ""
+    ahead: int = 0
+    behind: int = 0
+    dirty_count: int = 0
+    fetch_attempted: bool = False
+    fetch_ok: bool = False
+    fetch_error: str = ""
+
+    @property
+    def warning(self) -> bool:
+        return bool(
+            self.root is None
+            or self.behind
+            or self.dirty_count
+            or not self.upstream
+            or (self.fetch_attempted and not self.fetch_ok)
+        )
+
+    @property
+    def summary(self) -> str:
+        if self.root is None:
+            return "Git: not available for this comparison"
+        parts = [f"Git: {self.branch}"]
+        if self.upstream:
+            if self.behind:
+                parts.append(f"{self.behind} behind {self.upstream}")
+            elif self.ahead:
+                parts.append(f"{self.ahead} ahead of {self.upstream}")
+            elif self.fetch_ok:
+                parts.append(f"up to date with {self.upstream}")
+            else:
+                parts.append(f"remote freshness unverified ({self.upstream})")
+        else:
+            parts.append("no upstream")
+        parts.append(f"{self.dirty_count} local change(s)" if self.dirty_count else "clean")
+        return " · ".join(parts)
+
+
+@dataclass(slots=True, frozen=True)
+class GitCommitContext:
+    """One commit used as report context for a changed line range."""
+
+    source: str  # line | file
+    short_hash: str
+    author: str
+    date: str
+    subject: str
+
+
+@dataclass(slots=True)
 class AppSettings:
     source: Path
     target: Path
@@ -1108,6 +1164,161 @@ def git_uncommitted_paths(git_root: Path | None) -> set[Path]:
             index += 1
         paths.add((git_root / path_text).resolve())
     return paths
+
+
+def _run_git_text(
+    git_root: Path,
+    args: Sequence[str],
+    *,
+    timeout: float | None = None,
+    env: Mapping[str, str] | None = None,
+) -> tuple[int, str, str]:
+    """Run one read-only Git query and return ``(code, stdout, stderr)``."""
+    command_env = os.environ.copy()
+    if env:
+        command_env.update(env)
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(git_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=command_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def git_repository_status(
+    git_root: Path | None,
+    *,
+    fetch_remote: bool = True,
+    timeout: float = 8.0,
+) -> GitRepositoryStatus:
+    """Check branch freshness without modifying tracked working-tree files.
+
+    A best-effort ``git fetch --prune --no-tags`` is used so a "behind" warning
+    reflects the current remote rather than a potentially stale local tracking
+    ref. Authentication prompts are disabled and failures become visible status
+    text instead of blocking startup indefinitely.
+    """
+    if git_root is None:
+        return GitRepositoryStatus(root=None)
+
+    root = git_root.resolve()
+    branch, commit = git_checkout_identity(root)
+    status = GitRepositoryStatus(root=root, branch=branch, commit=commit)
+
+    status.dirty_count = len(git_uncommitted_paths(root))
+
+    code, upstream, _ = _run_git_text(
+        root,
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+    )
+    if code == 0:
+        status.upstream = upstream
+
+    if fetch_remote and status.upstream:
+        status.fetch_attempted = True
+        code, _, error = _run_git_text(
+            root,
+            ["fetch", "--quiet", "--prune", "--no-tags"],
+            timeout=timeout,
+            env={"GIT_TERMINAL_PROMPT": "0"},
+        )
+        status.fetch_ok = code == 0
+        if code != 0:
+            status.fetch_error = (error.splitlines()[-1] if error else "git fetch failed")[:240]
+
+    if status.upstream:
+        code, counts, _ = _run_git_text(
+            root,
+            ["rev-list", "--left-right", "--count", f"HEAD...{status.upstream}"],
+        )
+        if code == 0:
+            fields = counts.split()
+            if len(fields) == 2 and all(field.isdigit() for field in fields):
+                status.ahead, status.behind = (int(fields[0]), int(fields[1]))
+    return status
+
+
+def _git_relative_path(git_root: Path, path: Path) -> str | None:
+    try:
+        return path.resolve().relative_to(git_root.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def _git_commit_details(git_root: Path, commit: str, *, source: str) -> GitCommitContext | None:
+    code, output, _ = _run_git_text(
+        git_root,
+        ["show", "-s", "--date=short", "--format=%h%x09%an%x09%ad%x09%s", commit],
+    )
+    if code != 0 or not output:
+        return None
+    fields = output.split("\t", 3)
+    if len(fields) != 4:
+        return None
+    return GitCommitContext(source, fields[0], fields[1], fields[2], fields[3])
+
+
+def git_commit_context_for_range(
+    git_root: Path | None,
+    path: Path,
+    start_line: int,
+    end_line: int,
+    *,
+    limit: int = 2,
+) -> list[GitCommitContext]:
+    """Return line-level commit context, falling back to the latest file commit."""
+    if git_root is None or not path.exists():
+        return []
+    relative = _git_relative_path(git_root, path)
+    if relative is None:
+        return []
+
+    hashes: list[str] = []
+    use_line_blame = start_line > 0 and end_line >= start_line
+    if use_line_blame:
+        start = max(1, start_line)
+        end = max(start, end_line)
+        code, output, _ = _run_git_text(
+            git_root,
+            ["blame", "--line-porcelain", "-L", f"{start},{end}", "--", relative],
+            timeout=5.0,
+            env={"GIT_PAGER": "cat"},
+        )
+    else:
+        code, output = 1, ""
+    if code == 0:
+        for line in output.splitlines():
+            match = re.fullmatch(r"([0-9a-f]{40,64}) \d+ \d+(?: \d+)?", line)
+            if not match:
+                continue
+            commit = match.group(1)
+            if set(commit) == {"0"} or commit in hashes:
+                continue
+            hashes.append(commit)
+            if len(hashes) >= limit:
+                break
+
+    contexts = [
+        context
+        for commit in hashes
+        if (context := _git_commit_details(git_root, commit, source="line")) is not None
+    ]
+    if contexts:
+        return contexts
+
+    code, commit, _ = _run_git_text(git_root, ["log", "-1", "--format=%H", "--", relative])
+    if code == 0 and commit:
+        context = _git_commit_details(git_root, commit, source="file")
+        return [context] if context is not None else []
+    return []
 
 
 def _ensure_not_symlink_target(path: Path) -> None:

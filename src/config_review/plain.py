@@ -182,7 +182,7 @@ def plain_pattern_preview(
         candidates = workbench.pattern_candidates()
         candidate = next((item for item in candidates if item.rule.id == pattern_id), None)
         if candidate is None:
-            print("Pattern is no longer present after the project changed.")
+            print("Noise filter is no longer present after the project changed.")
             return
         print("\n" + "=" * 100)
         print(color(candidate.rule.name, "magenta", "bold"))
@@ -261,7 +261,7 @@ def plain_pattern_preview(
 def plain_display_filters(workbench: Workbench) -> None:
     while True:
         print("\n" + "=" * 100)
-        print(color("DISPLAY FILTERS", "magenta", "bold"))
+        print(color("DISPLAY OPTIONS", "magenta", "bold"))
         print(
             "Filtering affects Focused Diff only; muting is visual in both views. Full Diff hides nothing."
         )
@@ -309,8 +309,10 @@ def plain_pattern_manager(workbench: Workbench) -> None:
         candidates = workbench.pattern_candidates()
         protected = workbench.protected_summaries()
         print("\n" + "=" * 100)
-        print(color("PROJECT PATTERN MANAGER", "magenta", "bold"))
-        print(f"Scanned {len(workbench.records)} changed file(s); patterns apply project-wide.")
+        print(color("NOISE FILTERS", "magenta", "bold"))
+        print(
+            f"Scanned {len(workbench.records)} changed file(s); noise filters apply project-wide."
+        )
         print(
             color(
                 "Noise suggestions are hidden by default. Full Diff always remains literal.",
@@ -367,15 +369,15 @@ def plain_pattern_manager(workbench: Workbench) -> None:
 
         if not candidates and not protected:
             print(
-                f"No repeated project-wide patterns found. Narrow suggestions require "
+                f"No repeated project-wide noise filters found. Narrow suggestions require "
                 f"{MIN_PATTERN_MATCHES}+ matches; broad suggestions require "
                 f"{BROAD_PATTERN_MIN_MATCHES}+ unless they span {MIN_PATTERN_FILES}+ files."
             )
 
-        print("\nEnter a pattern number to preview it.")
-        print("[cN] toggle category N  [f] display filters  [b] back")
+        print("\nEnter a noise-filter number to preview it.")
+        print("[cN] toggle category N  [f] display options  [b] back")
         try:
-            choice = input("Pattern manager: ").strip().lower()
+            choice = input("Noise filters: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -401,33 +403,166 @@ def plain_pattern_manager(workbench: Workbench) -> None:
             plain_pattern_preview(workbench, candidate.rule.id)
 
 
-def plain_file_actions(workbench: Workbench, record: FileRecord) -> bool:
-    copy_label = (
-        "Copy the complete DEV file to TEST"
-        if record.dev_exists
-        else "Delete TEST because DEV is absent"
-    )
-    print("\nFILE ACTIONS")
-    print(f"[c] {copy_label}")
-    print("[b] Back")
-    try:
-        choice = input("Action: ").strip().lower()[:1]
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return False
-    if choice != "c":
-        return False
-    question = "Replace TEST with the complete DEV file?"
-    if not record.dev_exists:
-        question = "DEV is absent. Delete TEST?"
-    if record.uncommitted:
-        question += " TEST had pre-existing uncommitted changes."
-    answer = input(question + " [y/N]: ").strip().lower()
-    if answer != "y":
-        return False
-    _, message = workbench.copy_dev_to_test(record)
-    print(message)
-    return True
+def plain_filters(workbench: Workbench) -> None:
+    while True:
+        print("\nFILTERS")
+        print("[1] Noise filters — repeated environment, domain, endpoint, and project noise")
+        print("[2] Display options — whitespace, safe YAML order noise, and focused contrast")
+        print("[b] Back")
+        try:
+            choice = input("Filters: ").strip().lower()[:1]
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice in {"b", "q", ""}:
+            return
+        if choice == "1":
+            plain_pattern_manager(workbench)
+        elif choice == "2":
+            plain_display_filters(workbench)
+
+
+def plain_report_options(workbench: Workbench, record: FileRecord, *, mode: str) -> None:
+    include_context_labels = True
+    include_git_context = True
+    while True:
+        presentation = workbench._report_presentation(record, mode)
+        print("\nVISIBLE-DIFF REPORT")
+        print(
+            f"{record.relative_path} · {'Full Diff' if mode == 'full' else 'Focused Diff'} · "
+            f"{presentation.visible_change_count} selectable difference(s)"
+        )
+        print(f"[1] [{'x' if include_context_labels else ' '}] Context labels")
+        print(f"[2] [{'x' if include_git_context else ' '}] Git commit context")
+        print("[o] Open report in editor")
+        print("[s] Save report under .config-review-reports/")
+        print("[p] Print report to terminal")
+        print("[b] Back")
+        try:
+            choice = input("Report: ").strip().lower()[:1]
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if choice in {"b", "q", ""}:
+            return
+        if choice == "1":
+            include_context_labels = not include_context_labels
+            continue
+        if choice == "2":
+            include_git_context = not include_git_context
+            continue
+        if choice == "p":
+            print(
+                "\n"
+                + workbench.generate_file_report(
+                    record,
+                    mode=mode,
+                    include_context_labels=include_context_labels,
+                    include_git_context=include_git_context,
+                )
+            )
+            continue
+        if choice in {"o", "s"}:
+            try:
+                path = workbench.save_file_report(
+                    record,
+                    mode=mode,
+                    include_context_labels=include_context_labels,
+                    include_git_context=include_git_context,
+                )
+            except (OSError, WorkbenchError) as exc:
+                print(f"Could not create report: {exc}")
+                continue
+            if choice == "s":
+                print(f"Saved report to {path}")
+                continue
+            command = parse_editor_command(workbench.settings.edit_command)
+            if not command:
+                print(f"No edit command configured. Report was saved to {path}")
+                continue
+            try:
+                code = subprocess.run([*command, str(path)], check=False).returncode
+                print(f"Report editor exited with status {code}; saved to {path}")
+            except OSError as exc:
+                print(f"Could not open report editor: {exc}")
+
+
+def plain_file_actions(workbench: Workbench, record: FileRecord, *, mode: str) -> bool:
+    while True:
+        _status, counts = workbench.file_status(record)
+        copy_label = (
+            "Copy the complete DEV file to TEST"
+            if record.dev_exists
+            else "Delete TEST because DEV is absent"
+        )
+        completion_label = (
+            "Reopen file for review"
+            if record.resolved_mode == "manual"
+            else f"Mark file complete ({counts.active} active difference(s))"
+        )
+        print("\nFILE ACTIONS")
+        print(f"[m] {completion_label}")
+        print("[u] Undo this run's file changes")
+        print("[r] Visible-diff report")
+        print(f"[c] {copy_label}")
+        print("[b] Back")
+        try:
+            choice = input("Action: ").strip().lower()[:1]
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if choice in {"b", "q", ""}:
+            return False
+        if choice == "m":
+            if record.resolved_mode == "manual":
+                workbench.mark_complete(record, False)
+                print("Reopened the file for review.")
+                return True
+            if counts.active:
+                updated = workbench.mark_complete(record, True)
+                print(f"Marked done manually with {updated.active} active diff(s).")
+                return True
+            print("No active diffs remain; this file is already complete.")
+            continue
+        if choice == "u":
+            answer = (
+                input(
+                    "Undo this run's file edits and review progress? Noise filters stay unchanged. [y/N]: "
+                )
+                .strip()
+                .lower()
+            )
+            if answer != "y":
+                continue
+            changed, message, needs_confirmation = workbench.undo_session_changes(record)
+            if needs_confirmation:
+                answer = (
+                    input(
+                        "TEST changed outside the tool. Restore the session-start copy anyway? [y/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if answer == "y":
+                    changed, message, _ = workbench.undo_session_changes(record, force=True)
+            print(message)
+            return changed
+        if choice == "r":
+            plain_report_options(workbench, record, mode=mode)
+            continue
+        if choice != "c":
+            continue
+        question = "Replace TEST with the complete DEV file?"
+        if not record.dev_exists:
+            question = "DEV is absent. Delete TEST?"
+        if record.uncommitted:
+            question += " TEST had pre-existing uncommitted changes."
+        answer = input(question + " [y/N]: ").strip().lower()
+        if answer != "y":
+            continue
+        _, message = workbench.copy_dev_to_test(record)
+        print(message)
+        return True
 
 
 def plain_review_actions(
@@ -483,8 +618,8 @@ def plain_review_actions(
             mute_non_focused=workbench.mute_non_focused,
         )
         print("Resolve: [a]ccept DEV  [s]keep TEST")
-        print("Edit: [p]ull DEV + edit  [e]dit TEST  [v]vimdiff")
-        print("Navigate: [j/k] change  Prev file: [  Next file: ]  [b]ack  [q]uit")
+        print("Edit: [l]pull DEV + edit  [e]dit TEST  [v]vimdiff")
+        print("Navigate: [n/p] previous/next diff  [ / ] Previous/next file  [b]ack  [q]uit")
         try:
             choice = input("Action: ").strip()[:1]
         except (EOFError, KeyboardInterrupt):
@@ -495,10 +630,10 @@ def plain_review_actions(
             return ReviewMenuResult(selected_change, changed=changed_any, quit=True)
         if lowered == "b" or not choice:
             return ReviewMenuResult(selected_change, changed=changed_any)
-        if lowered == "j":
+        if lowered in {"n", "j"}:
             selected_change = (selected_change + 1) % count
             continue
-        if lowered == "k":
+        if lowered in {"p", "k"}:
             selected_change = (selected_change - 1) % count
             continue
         if choice == "[":
@@ -516,7 +651,7 @@ def plain_review_actions(
             continue
 
         before = _test_snapshot(record)
-        if lowered == "p":
+        if lowered == "l":
             action = "PULL DEV + EDIT"
             _, message = workbench.pull_dev_block_and_edit(record, block)
         elif lowered == "e":
@@ -566,7 +701,7 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
             mode_title = (
                 f"FOCUSED DIFF — {presentation.visible_change_count} active · "
                 f"{presentation.handled_count} handled · "
-                f"{pattern_hidden} pattern-hidden · {whitespace_hidden} whitespace-hidden · "
+                f"{pattern_hidden} noise-hidden · {whitespace_hidden} whitespace-hidden · "
                 f"{'expanded' if expand_filtered else 'collapsed'}"
             )
             mapping_note = mapping_state
@@ -579,7 +714,7 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
             selected_change = presentation.selected_change or 0
             mode_title = (
                 f"FULL DIFF — {presentation.visible_change_count} active · "
-                f"{presentation.handled_count} handled · PATTERN FILTERING DISABLED"
+                f"{presentation.handled_count} handled · NOISE FILTERING DISABLED"
             )
             mapping_note = "Display filters are disabled in Full Diff."
 
@@ -596,7 +731,7 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
             print(
                 color(
                     f"ACTIVE CHANGE {selected_change + 1}/{presentation.visible_change_count}; "
-                    "use j/k to step through active changes.",
+                    "use n/p to step through active differences.",
                     "yellow",
                 )
             )
@@ -622,24 +757,12 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
         if mode == "focused":
             hidden_action = "[h]collapse hidden" if expand_filtered else "[h]expand hidden"
             print(
-                f"[j]next  [k]previous  [Enter]review  [d]full diff  "
-                f"{hidden_action}  [f]display filters  [g]patterns"
+                f"[n/p] previous/next diff  [Enter]review  [d]full diff  "
+                f"{hidden_action}  [f]filters"
             )
         else:
-            print(
-                "[j]next  [k]previous  [Enter]review  [d]focused diff  "
-                "[f]display filters  [g]patterns"
-            )
-        completion_action = ""
-        if record.resolved_mode == "manual":
-            completion_action = "[m]reopen file  "
-        elif focused_counts.active:
-            completion_action = "[m]mark complete  "
-        print(
-            completion_action
-            + "[u]undo session changes  "
-            + "[x]file actions  Prev file: [  Next file: ]  [b]back  [q]quit"
-        )
+            print("[n/p] previous/next diff  [Enter]review  [d]focused diff  [f]filters")
+        print("[a]file actions  [ / ] Previous/next file  [b]back  [q]quit")
         try:
             raw_choice = input("Action: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -662,10 +785,11 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
             expand_filtered = not expand_filtered
             continue
         if choice == "f":
-            plain_display_filters(workbench)
+            plain_filters(workbench)
             selected_change = 0
             continue
         if choice == "g":
+            # Backward-compatible shortcut for the former Patterns command.
             plain_pattern_manager(workbench)
             selected_change = 0
             continue
@@ -682,7 +806,7 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
         if choice == "u":
             answer = (
                 input(
-                    "Undo this run's file edits and review progress? Project patterns stay unchanged. [y/N]: "
+                    "Undo this run's file edits and review progress? Noise filters stay unchanged. [y/N]: "
                 )
                 .strip()
                 .lower()
@@ -704,17 +828,17 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
             if changed:
                 selected_change = 0
             continue
-        if choice == "x":
-            changed = plain_file_actions(workbench, record)
+        if choice in {"a", "x"}:
+            changed = plain_file_actions(workbench, record, mode=mode)
             if changed:
                 selected_change = 0
             continue
-        if choice in {"j", "k"}:
+        if choice in {"n", "p", "j", "k"}:
             count = presentation.visible_change_count
             if count:
                 selected_change = (
                     (selected_change + 1) % count
-                    if choice == "j"
+                    if choice in {"n", "j"}
                     else (selected_change - 1) % count
                 )
             continue
@@ -814,15 +938,17 @@ def run_plain(workbench: Workbench) -> int:
         print(color(f"CONFIG REVIEW WORKBENCH v{VERSION}", "magenta", "bold"))
         print(f"DEV:  {workbench.settings.source}")
         print(f"TEST: {workbench.settings.target}")
+        git_style = ("yellow", "bold") if workbench.git_status.warning else ("green",)
+        print(color(workbench.git_status.summary, *git_style))
         print(color(workbench.session_status_text, "cyan"))
         print(
             color(
-                f"Project patterns: {len(workbench.enabled_patterns)} hidden · "
-                f"display filters: whitespace "
+                f"Noise filters: {len(workbench.enabled_patterns)} hidden · "
+                f"display options: whitespace "
                 f"{'hidden' if workbench.hide_whitespace else 'visible'}, YAML order "
                 f"{'hidden' if workbench.hide_mapping_order else 'visible'}, background "
                 f"{'muted' if workbench.mute_non_focused else 'full brightness'}. "
-                "New suggestions remain visible.",
+                "New suggestions are hidden by default.",
                 "yellow",
             )
         )
@@ -867,10 +993,7 @@ def run_plain(workbench: Workbench) -> int:
                 f"[{index:>2}] {color(f'{status_text:<30}', *styles)} "
                 f"{state_text} {record.relative_path}"
             )
-        print(
-            "[p]atterns  [f]display filters  [s]rescan  [uN]undo session changes for file N  "
-            "[x]project config  [q]uit"
-        )
+        print("[f]filters  [s]rescan/Git check  [x]project config  [q]uit")
         try:
             raw_choice = input("Open file number: ").strip()
             choice = raw_choice.lower()
@@ -884,6 +1007,8 @@ def run_plain(workbench: Workbench) -> int:
                 return 0
             continue
         if choice == "s":
+            workbench.refresh_git_status(fetch_remote=True)
+            print(workbench.git_status.summary)
             continue
         if choice.startswith("u"):
             index_text = choice[1:]
@@ -897,7 +1022,7 @@ def run_plain(workbench: Workbench) -> int:
                 record = records[undo_index]
                 answer = (
                     input(
-                        "Undo this run's file edits and review progress? Project patterns stay unchanged. [y/N]: "
+                        "Undo this run's file edits and review progress? Noise filters stay unchanged. [y/N]: "
                     )
                     .strip()
                     .lower()
@@ -921,7 +1046,7 @@ def run_plain(workbench: Workbench) -> int:
             plain_pattern_manager(workbench)
             continue
         if choice == "f":
-            plain_display_filters(workbench)
+            plain_filters(workbench)
             continue
         if choice == "x":
             if workbench.settings.dry_run:
@@ -949,7 +1074,7 @@ def run_plain(workbench: Workbench) -> int:
                 workbench.scan()
                 print(
                     f"Project config editor exited with status {code}; "
-                    f"loaded {len(workbench.patterns)} pattern(s)."
+                    f"loaded {len(workbench.patterns)} noise filter(s)."
                 )
             except (OSError, WorkbenchError) as exc:
                 print(f"Could not edit/reload project config: {exc}")

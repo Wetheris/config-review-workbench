@@ -13,7 +13,7 @@ configurations are semantically equivalent or whether a change is safe to promot
 - Focused Diff for collapsing approved environment-specific noise
 - Full Diff for viewing the complete, literal TEST and DEV text
 - Exact per-change actions: accept DEV, keep TEST, edit TEST, or open Vimdiff
-- Project-wide pattern discovery and user-controlled filtering
+- Project-wide noise-filter discovery and user-controlled filtering
 - Session history, automatic progress saving, and current-run undo
 - Conservative write validation, atomic file replacement, and symlink protection
 - A single portable `config-review.pyz` executable for deployment
@@ -44,12 +44,12 @@ shown in red, while DEV/incoming values are shown in green.
 
 ![Focused Diff](docs/images/focused-diff.png)
 
-### Pattern Manager
+### Noise Filters
 
-Press `p` from the main file list to audit repeated project-wide replacements
-that Focused Diff collapses by default.
+Open **Filters → Noise filters** to audit repeated project-wide replacements that
+Focused Diff collapses by default.
 
-![Pattern Manager](docs/images/pattern-manager.png)
+![Noise Filters](docs/images/pattern-manager.png)
 
 ### Filtered differences
 
@@ -126,18 +126,17 @@ Press `c` from the main file list and open **Comparison paths**. You can either:
 When review progress exists, the workbench asks to save the current session before
 switching. The verified paths are then written to `.config-review.yaml`, the new
 project is rescanned immediately, and any saved session for that comparison can be
-loaded. Previously saved project patterns are disabled during the switch so approvals
-from one comparison are not carried into another. Newly discovered noise suggestions
-still use the quick-review default described below. Display settings remain
-project-configured.
+loaded. Previously saved project noise filters are disabled during the switch so
+approvals from one comparison are not carried into another. Newly discovered noise suggestions
+still use the quick-review default described below. Display options remain project-configured.
 
 ### Configuration behavior across updates
 
 `.config-review.yaml` is local runtime state and is ignored by Git. Pulling a new
 source build or replacing `dist/config-review.pyz` does **not** overwrite it. New
 defaults apply only when the config file or a setting is missing; explicit existing
-settings and pattern choices are preserved. The application writes the file only when
-you change paths, filters, patterns, or other project settings.
+settings and filter choices are preserved. The application writes the file only when
+you change paths, filters, or other project settings.
 
 ## Basic walkthrough
 
@@ -153,14 +152,15 @@ you change paths, filters, patterns, or other project settings.
    `COMPLETE` files have no remaining visible review work. Gray `FILTERED ONLY`
    files still contain differences hidden by approved filters.
 
-4. **Press Enter on a file** to open Focused Diff. Use `j` and `k` to move through
-   active changes. Arrow keys scroll the file without changing the selected block.
+4. **Press Enter on a file** to open Focused Diff. Use `n` and `p` to move through
+   the next or previous active difference. Arrow keys and Page Up/Page Down navigate
+   the current view without changing the selected block.
 
 5. **Press Enter on the selected change** to open its action panel. Choose to accept
    DEV, keep TEST, edit TEST, pull DEV and edit, or open Vimdiff.
 
-6. **Open Full Diff whenever needed.** Full Diff ignores every pattern and display
-   filter and shows the literal current TEST and DEV text.
+6. **Open Full Diff whenever needed.** Full Diff ignores noise filters and display
+   options and shows the literal current TEST and DEV text.
 
 7. **Quit normally to save review progress.** The next launch asks whether to restore
    the saved session or start fresh.
@@ -171,104 +171,136 @@ you change paths, filters, patterns, or other project settings.
 
 | Key | Action |
 |---|---|
-| `j` / `k`, `↑` / `↓` | Move through files and expanded changes |
-| `Space` | Expand or collapse a file's change index |
-| `Enter` | Open the selected file or selected change |
+| `j` / `k`, `↑` / `↓` | Move through files and expanded differences |
+| `Space` | Expand or collapse a file's difference index |
+| `Enter` | Open the selected file or selected difference |
 | `[` / `]` | Previous or next file |
-| `c` | Open Configure for comparison paths, patterns, display filters, config editing, and rescan |
-| `p` | Open Pattern Manager directly |
-| `f` | Open Display Filters directly |
-| `u` | Undo this run's changes for the selected file |
-| `s` | Rescan DEV and TEST directly |
-| `x` | Edit `.config-review.yaml` directly |
+| `c` | Open Configure for comparison paths, filters, config editing, and rescan |
+| `f` | Open the Filters submenu directly |
+| `s` | Rescan DEV and TEST and refresh the Git freshness check |
 | `?` | Help |
 | `q` | Quit |
+
+Older direct shortcuts remain accepted for compatibility, but less-common actions are
+kept out of the footer so the quick-review view stays readable.
 
 ### Configure menu
 
 | Item | Purpose |
 |---|---|
 | Comparison paths | Change the project root or set exact DEV and TEST directories |
-| Pattern filters | Review and toggle project-wide noise filters |
-| Display filters | Control whitespace, safe YAML order handling, and focused contrast presentation |
+| Filters | Open Noise filters or Display options |
 | Edit project config | Open `.config-review.yaml` in the configured editor |
-| Rescan | Refresh the current DEV and TEST directory trees |
-
-The direct `p`, `f`, `s`, and `x` shortcuts remain available, but the compact footer
-only advertises the most common navigation plus `c`, `?`, and `q` on small screens.
+| Rescan | Refresh DEV/TEST and rerun the Git freshness check |
 
 ### Diff views
 
 | Key | Action |
 |---|---|
-| `j` / `k` | Next or previous active change |
-| `↑` / `↓`, `Page Up` / `Page Down` | Scroll through the file |
-| `←` / `→` | Horizontal scrolling |
+| `n` / `p` | Next or previous active difference |
+| `↑` / `↓`, `Page Up` / `Page Down` | Navigate vertically through the file |
+| `←` / `→` | Navigate horizontally |
 | `[` / `]` | Previous or next file |
-| `Enter` | Open actions for the selected change |
+| `Enter` | Open actions for the selected difference |
+| `a` | Open File Actions |
 | `h` | Expand or collapse filtered blocks |
-| `v` | Switch between Focused Diff and Full Diff |
-| `f` | Display Filters |
+| `d` | Switch between Focused Diff and Full Diff |
+| `f` | Open Filters |
+| `?` | Help |
 | `b` | Back |
 | `q` | Quit |
+
+### File Actions and visible-diff reports
+
+File Actions keeps file-level work out of the main footer. It contains manual
+complete/reopen, current-run undo, whole-file DEV-to-TEST copy/delete, and a report for
+the current file.
+
+The **Visible-diff report** is intentionally scoped to the current view:
+
+- Focused Diff reports include only currently selectable differences; hidden noise and
+  handled changes are omitted.
+- Full Diff reports include the literal selectable text differences.
+- Context labels can be enabled to classify changes deterministically as environment
+  variables, routing, resources, security, logging, schedules, and similar categories.
+- Git commit context can be enabled. The report tries line-level `git blame` first and
+  falls back to the latest commit touching the DEV or TEST file when attribution is
+  ambiguous.
+
+Reports can be opened in the configured editor, saved as Markdown under
+`.config-review-reports/`, or printed to the terminal. The report directory is ignored
+by Git.
+
+### Git freshness check
+
+At startup, the workbench performs a best-effort, read-only Git check. When the current
+branch has an upstream, it runs a non-interactive `git fetch --prune --no-tags`, then
+shows whether the branch is ahead, behind, or up to date and whether the working tree
+has local changes. It never pulls, merges, resets, or modifies tracked files.
+
+If fetching fails because the network or credentials are unavailable, the workbench
+continues and clearly marks remote freshness as unverified. Rescan reruns the check.
+
+For the exact report scope, context-label rules, blame fallback, and Git-check behavior,
+see [Visible-Diff Reports and Git Context](docs/reports-and-git-context.md).
 
 ## Focused Diff and Full Diff
 
 **Focused Diff** starts in a quick-review mode: whitespace-only blocks, safe YAML
-order-only changes, and discovered repeated noise patterns are collapsed by default.
+order-only changes, and discovered repeated noise filters are collapsed by default.
 Every collapsed block remains represented by a marker explaining why it is hidden.
-Saved per-pattern choices override the generated default.
+Saved per-filter choices override the generated default.
 
 **Full Diff** never hides anything. It is the authoritative view when you need to
 inspect the exact TEST/current and DEV/incoming text.
 
-## Pattern Manager
+## Noise Filters
 
-Press `p` from the main file list to open the Pattern Manager. It scans the current
-set of changed files for repeated TEST/current → DEV/incoming replacements and
+Open **Filters → Noise filters** to inspect repeated project-wide replacements. It
+scans the current set of changed files for repeated TEST/current → DEV/incoming replacements and
 groups suggestions into categories such as environment identity, application
 domains, endpoints, user references, and storage identifiers.
 
-Pattern suggestions are **hidden by default** for an at-a-glance review. Category
+Noise-filter suggestions are **hidden by default** for an at-a-glance review. Category
 rows start collapsed so the screen initially shows only the summary. Press `Enter` to
-expand a category, then use `Space` to show any pattern that should not be treated as
+expand a category, then use `Space` to show any filter that should not be treated as
 noise. Full Diff remains completely literal.
 
 ### Understanding the columns
 
 | Column | Meaning |
 |---|---|
-| `STATE` | `VISIBLE` means matching changes remain expanded in Focused Diff. `HIDDEN` means the rule is enabled and matching changes are collapsed. `LOCKED` identifies always-reviewed changes that patterns cannot hide. |
-| `MATCHES` | Number of changed blocks matched by the pattern or category. |
+| `STATE` | `VISIBLE` means matching changes remain expanded in Focused Diff. `HIDDEN` means the rule is enabled and matching changes are collapsed. `LOCKED` identifies always-reviewed changes that noise filters cannot hide. |
+| `MATCHES` | Number of changed blocks matched by the filter or category. |
 | `FILES` | Number of unique files containing those matches. |
-| `OVERLAP` | Number of matched blocks also covered by another suggested or saved pattern. |
-| `CATEGORY / PATTERN` | The pattern group and the individual replacement rule. |
+| `OVERLAP` | Number of matched blocks also covered by another suggested or saved filter. |
+| `CATEGORY / FILTER` | The filter group and the individual replacement rule. |
 
 A hidden change is not removed, accepted, or marked complete. It is only collapsed
 in Focused Diff with a `FILTERED DIFF (HIDDEN)` marker and a brief reason. Full Diff
 always shows the original TEST and DEV lines.
 
-### Reviewing pattern defaults
+### Reviewing noise-filter defaults
 
 - Use `↑` / `↓` or `j` / `k` to select a row.
 - Press `Enter` on a category to expand or collapse it.
-- Press `Enter` on a pattern to preview its regexes and matching examples with nearby
+- Press `Enter` on a filter to preview its regexes and matching examples with nearby
   context.
-- Press `Space` on an individual pattern to hide or show it.
-- Press `Space` on a category to hide or show every pattern in that category.
-- Press `f` to open Display Filters.
+- Press `Space` on an individual filter to hide or show it.
+- Press `Space` on a category to hide or show every filter in that category.
+- Use the Filters submenu to open Display options.
 - Press `x` to inspect or edit `.config-review.yaml`.
 
-Review broad or surprising patterns before relying on the quick view. Suggested
-patterns are regex-based evidence of a repeated replacement, not proof that the two
+Review broad or surprising filters before relying on the quick view. Suggested
+filters are regex-based evidence of a repeated replacement, not proof that the two
 values are semantically equivalent. Broad hostname or endpoint suggestions deserve
 particular scrutiny; show them when they are relevant to the release.
 
-When a changed block matches several patterns, `OVERLAP` reports that relationship.
-The block remains hidden while **any** enabled matching pattern still applies. All
+When a changed block matches several filters, `OVERLAP` reports that relationship.
+The block remains hidden while **any** enabled matching filter still applies. All
 matching reasons remain available in Filter Details.
 
-Pattern choices are saved in `.config-review.yaml` and apply across the whole
+Noise-filter choices are saved in `.config-review.yaml` and apply across the whole
 project on later runs. A saved `VISIBLE` choice overrides the hidden-by-default
 behavior for that rule.
 
@@ -279,7 +311,7 @@ list handling, fallbacks, and merge safety, see
 
 ### Always-reviewed changes
 
-Pattern rules cannot hide protected changes such as:
+Noise-filter rules cannot hide protected changes such as:
 
 - Versions, image tags, chart versions, and revisions
 - Replica counts and CPU or memory resources
@@ -290,17 +322,18 @@ Pattern rules cannot hide protected changes such as:
 These rows appear as `LOCKED` or remain `VISIBLE`, even when nearby environment
 differences are filtered.
 
-## Display Filters
+## Display options
 
-Display Filters are separate from project patterns:
+Display options are separate from project noise filters:
 
 - Show or hide whitespace-only changes
 - Hide safe YAML order-only changes, including exact mapping moves and unique
   `name`-keyed list moves
 - Mute non-focused diff content
 
-Display Filters change how Focused Diff is presented. Full Diff remains completely
+Display options change how Focused Diff is presented. Full Diff remains completely
 unfiltered.
+
 ## Applying changes safely
 
 Accept DEV revalidates the selected hunk immediately before writing. If the current

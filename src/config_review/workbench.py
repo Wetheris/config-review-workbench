@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 try:
     import curses
@@ -33,6 +33,8 @@ from .core import (
     ChangeBlock,
     DEFAULT_EXCLUDED_DIRS,
     FileRecord,
+    GitCommitContext,
+    GitRepositoryStatus,
     HandledChange,
     PatternCandidate,
     PatternRule,
@@ -41,6 +43,7 @@ from .core import (
     SessionStore,
     VERSION,
     WorkbenchError,
+    _range_text,
     atomic_copy,
     atomic_write_bytes,
     atomic_write_text,
@@ -53,6 +56,8 @@ from .core import (
     file_record_sort_key,
     find_git_root,
     git_checkout_identity,
+    git_commit_context_for_range,
+    git_repository_status,
     git_uncommitted_paths,
     load_project_config,
     parse_editor_command,
@@ -65,6 +70,8 @@ from .core import (
     symlink_component,
 )
 from .rendering import (
+    change_block_summary,
+    full_unified_diff,
     review_unified_diff,
 )
 
@@ -73,6 +80,7 @@ class Workbench:
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
         self.git_root = find_git_root(settings.target)
+        self.git_status = git_repository_status(self.git_root, fetch_remote=True)
         self.initial_uncommitted = git_uncommitted_paths(self.git_root)
         self.session = SessionStore(settings.source, settings.target, self.git_root)
         self.resumed_session_label: str | None = None
@@ -123,6 +131,10 @@ class Workbench:
     @property
     def checkout_identity(self) -> tuple[str, str]:
         return git_checkout_identity(self.git_root)
+
+    def refresh_git_status(self, *, fetch_remote: bool = True) -> GitRepositoryStatus:
+        self.git_status = git_repository_status(self.git_root, fetch_remote=fetch_remote)
+        return self.git_status
 
     @property
     def session_status_text(self) -> str:
@@ -240,6 +252,7 @@ class Workbench:
         self.settings.source = source
         self.settings.target = target
         self.git_root = find_git_root(target)
+        self.git_status = git_repository_status(self.git_root, fetch_remote=True)
         self.initial_uncommitted = git_uncommitted_paths(self.git_root)
         self.session = SessionStore(source, target, self.git_root)
         self.resumed_session_label = None
@@ -503,7 +516,7 @@ class Workbench:
 
     def set_pattern_enabled(self, candidate: PatternCandidate, enabled: bool) -> tuple[bool, str]:
         if self.settings.dry_run:
-            return False, "Dry-run mode: project pattern changes are disabled."
+            return False, "Dry-run mode: project noise-filter changes are disabled."
         existing = next((rule for rule in self.patterns if rule.id == candidate.rule.id), None)
         if existing is None:
             existing = PatternRule(
@@ -534,7 +547,7 @@ class Workbench:
         except WorkbenchError as exc:
             return False, str(exc)
         state = "hidden" if enabled else "shown"
-        return True, f"Project-wide pattern is now {state} in Focused Diff."
+        return True, f"Project-wide noise filter is now {state} in Focused Diff."
 
     def set_category_patterns(
         self,
@@ -542,7 +555,7 @@ class Workbench:
         enabled: bool,
     ) -> tuple[bool, str]:
         if self.settings.dry_run:
-            return False, "Dry-run mode: project pattern changes are disabled."
+            return False, "Dry-run mode: project noise-filter changes are disabled."
         candidates = [
             candidate
             for candidate in self.pattern_candidates(refresh=True)
@@ -591,7 +604,179 @@ class Workbench:
         except WorkbenchError as exc:
             return False, str(exc)
         action = "hidden" if enabled else "shown"
-        return True, f"{category}: {changed} pattern(s) now {action} in Focused Diff."
+        return True, f"{category}: {changed} filter(s) now {action} in Focused Diff."
+
+    @staticmethod
+    def _change_context_label(record: FileRecord, block: ChangeBlock) -> str:
+        """Return a deterministic, offline label using the block and nearby YAML lines."""
+        test_lines = record.test_text.splitlines()
+        dev_lines = record.dev_text.splitlines()
+        nearby_test = test_lines[
+            max(0, block.old_start - 3) : min(len(test_lines), block.old_end + 2)
+        ]
+        nearby_dev = dev_lines[max(0, block.new_start - 3) : min(len(dev_lines), block.new_end + 2)]
+        text = "\n".join([*block.old_lines, *block.new_lines, *nearby_test, *nearby_dev])
+        lowered = text.lower()
+        names = re.findall(r"^\s*-\s*name:\s*[\"']?([^\"'\s]+)", text, re.MULTILINE)
+        if names:
+            name = names[0]
+            if name.isupper() or "_" in name:
+                return f"Environment variable · {name}"
+            return f"Named configuration item · {name}"
+        rules = (
+            (
+                (
+                    "securitycontext",
+                    "runasuser",
+                    "runasgroup",
+                    "readonlyrootfilesystem",
+                    "capabilities",
+                ),
+                "Security configuration",
+            ),
+            (("resources:", "requests:", "limits:", "cpu:", "memory:"), "Resource configuration"),
+            (("replicas:", "replicacount"), "Scaling"),
+            (("logging", "log_level", "loglevel"), "Logging"),
+            (("schedule:", "cron"), "Scheduled execution"),
+            (("targetport:", "containerport:", "serviceport:", "port:"), "Service networking"),
+            (("host:", "hostname:", "url:", "domain:", "route:", "ingress"), "Endpoint or routing"),
+            (("image:", "tag:", "version:", "chart:"), "Image or version"),
+            (("secret", "credential", "password"), "Secret or credential reference"),
+        )
+        for needles, label in rules:
+            if any(needle in lowered for needle in needles):
+                return label
+        return "Configuration value"
+
+    def _report_presentation(self, record: FileRecord, mode: str):
+        self.refresh_record(record)
+        if mode == "full":
+            return full_unified_diff(record, self.settings.context, selected_change=0)
+        return review_unified_diff(
+            record,
+            self.enabled_patterns,
+            self.settings.context,
+            hide_whitespace=self.hide_whitespace,
+            hide_mapping_order=self.hide_mapping_order,
+            expand_filtered=False,
+            selected_change=0,
+        )
+
+    def _block_git_context(
+        self,
+        record: FileRecord,
+        block: ChangeBlock,
+    ) -> tuple[list[GitCommitContext], list[GitCommitContext]]:
+        test_start = block.old_start + 1 if block.old_count else 0
+        test_end = block.old_end if block.old_count else -1
+        dev_start = block.new_start + 1 if block.new_count else 0
+        dev_end = block.new_end if block.new_count else -1
+        test_context = git_commit_context_for_range(
+            self.git_root, record.test_path, test_start, test_end
+        )
+        dev_context = git_commit_context_for_range(
+            self.git_root, record.dev_path, dev_start, dev_end
+        )
+        return test_context, dev_context
+
+    @staticmethod
+    def _render_commit_context(label: str, contexts: Sequence[GitCommitContext]) -> list[str]:
+        if not contexts:
+            return [f"- **{label}:** No tracked commit context was available."]
+        lines: list[str] = []
+        for context in contexts:
+            scope = "line" if context.source == "line" else "file fallback"
+            lines.append(
+                f"- **{label} ({scope}):** `{context.short_hash}` · "
+                f"{context.date} · {context.author} · {context.subject}"
+            )
+        return lines
+
+    def generate_file_report(
+        self,
+        record: FileRecord,
+        *,
+        mode: str = "focused",
+        include_context_labels: bool = True,
+        include_git_context: bool = True,
+    ) -> str:
+        """Generate Markdown for the current file's selectable differences."""
+        presentation = self._report_presentation(record, mode)
+        blocks = list(presentation.change_blocks)
+        view_name = "Full Diff" if mode == "full" else "Focused Diff"
+        generated = datetime.now().astimezone().isoformat(timespec="seconds")
+        git_note = self.git_status.summary
+        lines = [
+            "# Config Review Report",
+            "",
+            f"- **File:** `{record.relative_path}`",
+            f"- **View:** {view_name}",
+            f"- **Visible differences:** {len(blocks)}",
+            f"- **Generated:** {generated}",
+            f"- **DEV:** `{record.dev_path}`",
+            f"- **TEST:** `{record.test_path}`",
+            f"- **Repository status:** {git_note}",
+        ]
+        if mode == "focused":
+            lines.append(
+                "- **Scope:** Only currently selectable Focused Diff changes are included; "
+                "hidden noise and handled changes are omitted."
+            )
+        else:
+            lines.append("- **Scope:** Full literal text differences are included.")
+        lines.append("")
+
+        if not blocks:
+            lines.extend(["No visible differences are available in this view.", ""])
+            return "\n".join(lines)
+
+        for index, block in enumerate(blocks, start=1):
+            label = (
+                self._change_context_label(record, block) if include_context_labels else "Change"
+            )
+            lines.extend(
+                [
+                    f"## Change {index} — {label}",
+                    "",
+                    f"- **Location:** TEST {_range_text(block.old_start, block.old_end)} · "
+                    f"DEV {_range_text(block.new_start, block.new_end)}",
+                    f"- **Summary:** {change_block_summary(block)}",
+                ]
+            )
+            if include_git_context:
+                test_context, dev_context = self._block_git_context(record, block)
+                lines.extend(self._render_commit_context("TEST", test_context))
+                lines.extend(self._render_commit_context("DEV", dev_context))
+            lines.extend(["", "```diff"])
+            lines.extend(f"- {line}" for line in block.old_lines)
+            lines.extend(f"+ {line}" for line in block.new_lines)
+            lines.extend(["```", ""])
+        return "\n".join(lines)
+
+    def save_file_report(
+        self,
+        record: FileRecord,
+        *,
+        mode: str = "focused",
+        include_context_labels: bool = True,
+        include_git_context: bool = True,
+    ) -> Path:
+        """Write a local ignored Markdown report and return its path."""
+        report_dir = self.settings.config_file.parent / ".config-review-reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", record.relative_path).strip("-")
+        timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        path = report_dir / f"{slug or 'config'}-{mode}-{timestamp}.md"
+        atomic_write_text(
+            path,
+            self.generate_file_report(
+                record,
+                mode=mode,
+                include_context_labels=include_context_labels,
+                include_git_context=include_git_context,
+            ),
+        )
+        return path
 
     def _reconcile_changed_record(self, record: FileRecord) -> None:
         """Reopen changed content and retain only safely rematched decisions."""

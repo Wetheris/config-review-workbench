@@ -28,7 +28,7 @@ Focused Diff has a separate, narrowly scoped YAML order reconciliation for uniqu
 
 ## High-level pipeline
 
-The Pattern Manager follows this sequence:
+The **Noise Filters** screen follows this sequence:
 
 1. Build an **unfiltered canonical diff** for every changed text file.
 2. Exclude equal files, binary files, and files that could not be read.
@@ -241,7 +241,7 @@ A fragment pair is rejected when:
 At most three fragment pairs are retained from a single scalar replacement. Longer,
 more specific pairs are preferred.
 
-To prevent generic fragments from dominating the Pattern Manager, at most 12
+To prevent generic fragments from dominating the Noise Filters screen, at most 12
 generated candidates of kind `fragment` are retained project-wide. More specific
 candidate families are ranked ahead of generic fragments.
 
@@ -325,14 +325,14 @@ manually saved expressions are evaluated through this same block-level rule.
 
 ## 10. Merging saved and suggested rules
 
-Patterns already stored in `.config-review.yaml` are loaded first. Generated
+Noise filters already stored in `.config-review.yaml` are loaded first. Generated
 suggestions are then added by deterministic ID, so an existing saved rule takes
 precedence over an equivalent newly generated suggestion.
 
 Invalid saved regular expressions are skipped with a diagnostic rather than
 crashing the workbench.
 
-Saved patterns remain visible in the Pattern Manager even if they currently have no
+Saved filters remain visible in the Noise Filters screen even if they currently have no
 matches. This makes stale project configuration auditable and removable.
 
 ## 11. Ordering, duplicate coverage, and overlap
@@ -430,7 +430,7 @@ itself.
 - Generated patterns are project-wide; path-specific automatic rules are not
   currently produced.
 
-These limitations are why the compact Pattern Manager makes every generated rule
+These limitations are why the compact Noise Filters screen makes every generated rule
 auditable, why reviewers can save a visible override, and why Full Diff is always
 available.
 
