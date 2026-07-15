@@ -1,0 +1,20 @@
+# Uses tools from requirements-dev.txt instead of downloading hook environments.
+# Setup:
+#   python -m pip install -r requirements-dev.txt
+#   pre-commit install
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff correctness check
+        entry: ruff check
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: python-compile
+        name: Python syntax compile
+        entry: python -m py_compile
+        language: system
+        types: [python]

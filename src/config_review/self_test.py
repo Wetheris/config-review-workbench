@@ -6,25 +6,11 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
-import argparse
-import difflib
-import fnmatch
-import hashlib
-import json
 import os
-import re
-import shlex
-import shutil
-import stat
-import subprocess
 import sys
 import tempfile
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
+from typing import Any
 
 try:
     import curses
@@ -61,6 +47,7 @@ from .plain import (
     format_display_line,
 )
 
+
 def run_regression_tests() -> int:
     """Run a small, dependency-free hardening suite against real temporary files."""
     passed: list[str] = []
@@ -85,7 +72,9 @@ def run_regression_tests() -> int:
                 command = parse_editor_command("~/bin/review-editor --wait")
                 assert command == [str(home / "bin" / "review-editor"), "--wait"]
 
-            check("editor executable expands ~ without invoking a shell", test_editor_tilde_expansion)
+            check(
+                "editor executable expands ~ without invoking a shell", test_editor_tilde_expansion
+            )
 
             def test_horizontal_bounds() -> None:
                 long_lines = [DisplayLine("x" * 120, "add", dev_line=1)]
@@ -123,12 +112,13 @@ def run_regression_tests() -> int:
                     selected_change=0,
                 )
                 assert selected_diff_body_range(presentation) == (1, 3)
-                plain_old = format_display_line(
-                    source_lines[1], 3, selected_guide=True
-                )
+                plain_old = format_display_line(source_lines[1], 3, selected_guide=True)
                 assert "│ " in plain_old
 
-            check("selected diff body receives an exact yellow guide range", test_selected_diff_guide_range)
+            check(
+                "selected diff body receives an exact yellow guide range",
+                test_selected_diff_guide_range,
+            )
 
             def test_atomic_symlink_refusal() -> None:
                 actual = root / "actual.yaml"
@@ -182,7 +172,10 @@ def run_regression_tests() -> int:
                 assert not confirmation
                 assert (target / "a.yaml").read_bytes() == b"key: test\n"
 
-            check("undo bytes are captured lazily and restore exact startup content", test_lazy_snapshot_and_undo)
+            check(
+                "undo bytes are captured lazily and restore exact startup content",
+                test_lazy_snapshot_and_undo,
+            )
 
             def test_external_change_after_tool_action_is_not_overwritten() -> None:
                 record = workbench.records_by_path["a.yaml"]
@@ -190,7 +183,9 @@ def run_regression_tests() -> int:
                 copied, message = workbench.copy_dev_to_test(record)
                 assert not copied
                 assert "outside the tool" in message
-                assert (target / "a.yaml").read_text(encoding="utf-8") == "key: external-after-undo\n"
+                assert (target / "a.yaml").read_text(
+                    encoding="utf-8"
+                ) == "key: external-after-undo\n"
 
             check(
                 "later write actions refuse external changes after a snapshot exists",
@@ -212,7 +207,10 @@ def run_regression_tests() -> int:
                 assert "before a safe undo snapshot" in message
                 assert test_path.read_text(encoding="utf-8") == "key: external\n"
 
-            check("first mutation refuses when TEST changed after startup", test_startup_hash_verification)
+            check(
+                "first mutation refuses when TEST changed after startup",
+                test_startup_hash_verification,
+            )
 
             def test_crlf_replacement() -> None:
                 record = workbench.records_by_path["crlf.yaml"]
@@ -238,7 +236,10 @@ def run_regression_tests() -> int:
                 assert (target / "linked.yaml").is_symlink()
                 assert actual.read_text(encoding="utf-8") == "key: test\n"
 
-            check("symlinked TEST records are badged and all write actions are blocked", test_workbench_symlink_badge_and_block)
+            check(
+                "symlinked TEST records are badged and all write actions are blocked",
+                test_workbench_symlink_badge_and_block,
+            )
 
             def test_duplicate_identity_ranges_do_not_overlap() -> None:
                 old = (
@@ -264,7 +265,10 @@ def run_regression_tests() -> int:
                     previous_old_end = block.old_end
                     previous_new_end = block.new_end
 
-            check("duplicate YAML-like scalar identities never create overlapping blocks", test_duplicate_identity_ranges_do_not_overlap)
+            check(
+                "duplicate YAML-like scalar identities never create overlapping blocks",
+                test_duplicate_identity_ranges_do_not_overlap,
+            )
 
     except (AssertionError, OSError, WorkbenchError) as exc:
         print(f"FAIL  {exc}", file=sys.stderr)
@@ -282,4 +286,3 @@ def run_regression_tests() -> int:
 
     print(f"All {len(passed)} targeted regression tests passed.")
     return 0
-

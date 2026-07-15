@@ -6,7 +6,6 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
-import argparse
 import difflib
 import fnmatch
 import hashlib
@@ -23,7 +22,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 try:
@@ -97,8 +96,10 @@ DEBUG_ENABLED = False
 
 DEBUG_LOG_PATH: Path | None = None
 
+
 class WorkbenchError(RuntimeError):
     """A safe, user-facing failure."""
+
 
 @dataclass(slots=True)
 class PatternRule:
@@ -119,7 +120,10 @@ class PatternRule:
         self.dev_compiled = re.compile(self.dev_regex)
 
     def applies_to(self, relative_path: str) -> bool:
-        return not self.files or any(fnmatch.fnmatch(relative_path, pattern) for pattern in self.files)
+        return not self.files or any(
+            fnmatch.fnmatch(relative_path, pattern) for pattern in self.files
+        )
+
 
 @dataclass(slots=True)
 class PatternExample:
@@ -133,6 +137,7 @@ class PatternExample:
     new_context_before: str | None = None
     new_context_after: str | None = None
 
+
 @dataclass(slots=True)
 class PatternCandidate:
     rule: PatternRule
@@ -143,12 +148,14 @@ class PatternCandidate:
     overlap_count: int = 0
     persisted: bool = False
 
+
 @dataclass(slots=True)
 class ProtectedChangeSummary:
     name: str
     match_count: int
     file_count: int
     examples: list[PatternExample]
+
 
 @dataclass(slots=True)
 class ChangeBlock:
@@ -176,6 +183,7 @@ class ChangeBlock:
     @property
     def new_count(self) -> int:
         return self.new_end - self.new_start
+
 
 @dataclass(slots=True)
 class HandledChange:
@@ -205,6 +213,7 @@ class HandledChange:
         if self.new_lines:
             return f"added: {_preview_text(self.new_lines, 58)}"
         return "saved review decision"
+
 
 @dataclass(slots=True)
 class FileRecord:
@@ -248,8 +257,7 @@ class FileRecord:
         )
         current_hash = file_hash(self.test_path) if self.test_exists else None
         self.edited = (
-            self.test_exists != self.initial_test_exists
-            or current_hash != self.initial_test_hash
+            self.test_exists != self.initial_test_exists or current_hash != self.initial_test_hash
         )
 
     @property
@@ -285,6 +293,7 @@ class FileRecord:
             states.append("SYMLINK")
         return states
 
+
 def _display_section_part(part: str) -> str:
     """Return a compact, readable section label for one path component."""
     return part.replace("_", " ").replace("-", " ").upper()
@@ -312,6 +321,7 @@ def file_record_sort_key(record: FileRecord) -> tuple[int, str, str]:
         record.relative_path.lower(),
     )
 
+
 def grouped_file_rows(records: Sequence[FileRecord]) -> list[tuple[str, int | None]]:
     """Build section headers plus record indexes for the main file list."""
     rows: list[tuple[str, int | None]] = []
@@ -324,6 +334,7 @@ def grouped_file_rows(records: Sequence[FileRecord]) -> list[tuple[str, int | No
         rows.append(("", index))
     return rows
 
+
 @dataclass(slots=True)
 class MappingScalarAnalysis:
     """Parsed scalar mapping entries plus an explicit availability state."""
@@ -331,12 +342,14 @@ class MappingScalarAnalysis:
     entries: dict[int, tuple[tuple[Any, ...], str, tuple[str, Any], str]]
     unavailable_reason: str | None = None
 
+
 @dataclass(slots=True)
 class MappingOrderResult:
     """Mapping-order reconciliation output and any parser availability reason."""
 
     blocks: list[ChangeBlock]
     unavailable_reason: str | None = None
+
 
 @dataclass(slots=True)
 class FilterResult:
@@ -353,6 +366,7 @@ class FilterResult:
     visible: list[ChangeBlock]
     mapping_order_unavailable_reason: str | None = None
 
+
 @dataclass(slots=True)
 class DisplayLine:
     """One screen line with optional TEST/DEV source coordinates."""
@@ -362,12 +376,14 @@ class DisplayLine:
     test_line: int | None = None
     dev_line: int | None = None
 
+
 def display_line_body_width(line: DisplayLine) -> int:
     """Return the horizontally scrollable width for one rendered diff line."""
     if line.test_line is None and line.dev_line is None:
         return len(line.text)
     prefix_width = 4 if line.kind in {"filtered_remove", "filtered_add", "filtered_context"} else 2
     return prefix_width + len(line.text)
+
 
 def maximum_horizontal_offset(
     lines: Sequence[DisplayLine],
@@ -392,6 +408,7 @@ def maximum_horizontal_offset(
         available = max(1, screen_width - x - 1 - gutter_width - guide_width)
         maximum = max(maximum, display_line_body_width(line) - available)
     return max(0, maximum)
+
 
 @dataclass(slots=True)
 class DiffPresentation:
@@ -433,6 +450,7 @@ class DiffPresentation:
         index = max(0, min(self.selected_change, len(self.change_blocks) - 1))
         return self.change_blocks[index]
 
+
 def selected_diff_body_range(
     presentation: DiffPresentation,
 ) -> tuple[int, int] | None:
@@ -448,12 +466,14 @@ def selected_diff_body_range(
     )
     return (start, end) if end > start else None
 
+
 @dataclass(slots=True)
 class ReviewMenuResult:
     selected_change: int
     changed: bool = False
     quit: bool = False
     file_delta: int = 0
+
 
 @dataclass(slots=True)
 class ReviewCounts:
@@ -462,6 +482,7 @@ class ReviewCounts:
     pattern_hidden: int
     whitespace_hidden: int
     mapping_order_hidden: int
+
 
 @dataclass(slots=True)
 class MainListRow:
@@ -474,6 +495,7 @@ class MainListRow:
     summary: str = ""
     block: ChangeBlock | None = None
 
+
 @dataclass(slots=True)
 class AppSettings:
     source: Path
@@ -484,6 +506,7 @@ class AppSettings:
     edit_command: str
     vimdiff_command: str
     dry_run: bool
+
 
 class SessionStore:
     """Hold in-memory review progress and save one explicit last-session snapshot.
@@ -613,8 +636,7 @@ class SessionStore:
         return [
             entry
             for entry in (
-                SessionStore._deserialize_handled(item)
-                for item in raw.get("handled_changes", [])
+                SessionStore._deserialize_handled(item) for item in raw.get("handled_changes", [])
             )
             if entry is not None
         ]
@@ -657,9 +679,7 @@ class SessionStore:
             # reappeared diff as still handled after an apply/edit action.
             match_handled_changes(record, current.blocks)
             if not same_pair:
-                record.handled_changes = reconciled_handled_entries(
-                    record, current.blocks
-                )
+                record.handled_changes = reconciled_handled_entries(record, current.blocks)
 
         self._rebuild_tracking(record)
         same_filter = str(raw.get("filter_signature", "")) == filter_signature
@@ -799,11 +819,7 @@ class SessionStore:
             and str(metadata.get("branch", "")) == current_branch
             and str(metadata.get("commit", "")) == current_commit
         )
-        exact = (
-            checkout_exact
-            and changed_file_count == 0
-            and exact_file_count == saved_file_count
-        )
+        exact = checkout_exact and changed_file_count == 0 and exact_file_count == saved_file_count
         progress = metadata.get("progress", {})
         if not isinstance(progress, Mapping):
             progress = {}
@@ -822,6 +838,7 @@ class SessionStore:
             "changed_file_count": changed_file_count,
             "path": str(self.path),
         }
+
 
 def debug(message: str, **fields: Any) -> None:
     """Emit diagnostic metadata without logging configuration values.
@@ -865,12 +882,14 @@ def debug(message: str, **fields: Any) -> None:
         sys.stderr.write(payload)
         sys.stderr.flush()
 
+
 def color(text: Any, *styles: str) -> str:
     rendered = str(text)
     if not COLOR_ENABLED or not styles:
         return rendered
     prefix = "".join(ANSI[name] for name in styles if name in ANSI)
     return f"{prefix}{rendered}{ANSI['reset']}" if prefix else rendered
+
 
 def file_hash(path: Path) -> str | None:
     try:
@@ -881,6 +900,7 @@ def file_hash(path: Path) -> str | None:
         return digest.hexdigest()
     except OSError:
         return None
+
 
 def read_text_file(path: Path) -> tuple[bool, str, bool, str | None]:
     if not path.exists():
@@ -894,7 +914,13 @@ def read_text_file(path: Path) -> tuple[bool, str, bool, str | None]:
     try:
         return True, data.decode("utf-8"), False, None
     except UnicodeDecodeError:
-        return True, data.decode("utf-8", errors="replace"), False, f"{path}: invalid UTF-8 was replaced for display"
+        return (
+            True,
+            data.decode("utf-8", errors="replace"),
+            False,
+            f"{path}: invalid UTF-8 was replaced for display",
+        )
+
 
 def read_file_metadata(path: Path) -> tuple[bool, int | None, str | None, str | None]:
     """Read startup existence, mode, and hash without retaining file contents."""
@@ -908,6 +934,7 @@ def read_file_metadata(path: Path) -> tuple[bool, int | None, str | None, str | 
     if digest is None:
         return True, mode, None, f"Could not hash {path}"
     return True, mode, digest, None
+
 
 def read_file_snapshot(path: Path) -> tuple[bool, bytes | None, int | None, str | None]:
     """Capture exact bytes lazily from a regular file without following a final symlink."""
@@ -941,6 +968,7 @@ def read_file_snapshot(path: Path) -> tuple[bool, bytes | None, int | None, str 
     finally:
         os.close(descriptor)
 
+
 def symlink_component(path: Path, root: Path) -> Path | None:
     """Return the first symlink in path beneath root without resolving through it."""
     root_absolute = Path(os.path.abspath(root))
@@ -960,12 +988,14 @@ def symlink_component(path: Path, root: Path) -> Path | None:
             return current
     return None
 
+
 def parse_editor_command(command_text: str) -> list[str]:
     """Split an editor command safely and expand a leading ~ in its executable path."""
     command = shlex.split(command_text)
     if command and command[0].startswith("~"):
         command[0] = str(Path(command[0]).expanduser())
     return command
+
 
 def discover_yaml_files(root: Path, excluded_dirs: set[str]) -> set[str]:
     if not root.is_dir():
@@ -979,6 +1009,7 @@ def discover_yaml_files(root: Path, excluded_dirs: set[str]) -> set[str]:
             if candidate.suffix.lower() in YAML_SUFFIXES:
                 found.add(candidate.relative_to(root).as_posix())
     return found
+
 
 def find_git_root(start: Path) -> Path | None:
     current = start.resolve()
@@ -999,6 +1030,7 @@ def find_git_root(start: Path) -> Path | None:
     if result.returncode != 0:
         return None
     return Path(result.stdout.strip()).resolve()
+
 
 def git_checkout_identity(git_root: Path | None) -> tuple[str, str]:
     """Return the current branch label and full commit SHA when available."""
@@ -1024,6 +1056,7 @@ def git_checkout_identity(git_root: Path | None) -> tuple[str, str]:
     if not branch:
         branch = "detached HEAD" if commit else "unknown"
     return branch, commit
+
 
 def git_uncommitted_paths(git_root: Path | None) -> set[Path]:
     if git_root is None:
@@ -1057,15 +1090,19 @@ def git_uncommitted_paths(git_root: Path | None) -> set[Path]:
         paths.add((git_root / path_text).resolve())
     return paths
 
+
 def _ensure_not_symlink_target(path: Path) -> None:
     if path.is_symlink():
         raise OSError(f"Refusing to replace symlinked TEST path: {path}")
+
 
 def atomic_copy(source: Path, target: Path) -> None:
     _ensure_not_symlink_target(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     mode = target.stat().st_mode if target.exists() else None
-    with tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.name}.", delete=False) as handle:
+    with tempfile.NamedTemporaryFile(
+        dir=target.parent, prefix=f".{target.name}.", delete=False
+    ) as handle:
         temp = Path(handle.name)
         with source.open("rb") as source_handle:
             shutil.copyfileobj(source_handle, handle)
@@ -1082,6 +1119,7 @@ def atomic_copy(source: Path, target: Path) -> None:
                 temp.unlink()
             except OSError:
                 pass
+
 
 def atomic_write_bytes(path: Path, data: bytes, mode: int | None = None) -> None:
     """Write exact bytes atomically, optionally restoring a captured file mode."""
@@ -1113,6 +1151,7 @@ def atomic_write_bytes(path: Path, data: bytes, mode: int | None = None) -> None
             except OSError:
                 pass
 
+
 def atomic_write_text(path: Path, text: str) -> None:
     """Write UTF-8 text atomically while preserving the existing file mode."""
     _ensure_not_symlink_target(path)
@@ -1143,6 +1182,7 @@ def atomic_write_text(path: Path, text: str) -> None:
                 temp.unlink()
             except OSError:
                 pass
+
 
 PROJECT_CONFIG_TEMPLATE = """# Config Review Workbench project configuration
 #
@@ -1186,6 +1226,7 @@ display:
 patterns: []
 """
 
+
 def _category_for_kind_or_name(kind: str, name: str = "") -> str:
     if kind == "environment-fragment":
         return CATEGORY_ENVIRONMENT
@@ -1195,15 +1236,23 @@ def _category_for_kind_or_name(kind: str, name: str = "") -> str:
         return CATEGORY_ENDPOINTS
 
     lowered = name.lower()
-    if re.search(r"(?:namespace|cluster|region|environment|profile|site|location|\benv\b)", lowered):
+    if re.search(
+        r"(?:namespace|cluster|region|environment|profile|site|location|\benv\b)", lowered
+    ):
         return CATEGORY_ENVIRONMENT
     if re.search(r"(?:url|uri|host|hostname|endpoint|address|\bip\b|port)", lowered):
         return CATEGORY_ENDPOINTS
-    if re.search(r"(?:user|username|account|principal|client|service.?account|reference|\bref\b|configmap|secret)", lowered):
+    if re.search(
+        r"(?:user|username|account|principal|client|service.?account|reference|\bref\b|configmap|secret)",
+        lowered,
+    ):
         return CATEGORY_USERS_REFERENCES
-    if re.search(r"(?:bucket|database|\bdb\b|schema|index|storage|\bs3\b|table|topic|queue)", lowered):
+    if re.search(
+        r"(?:bucket|database|\bdb\b|schema|index|storage|\bs3\b|table|topic|queue)", lowered
+    ):
         return CATEGORY_STORAGE_DATA
     return CATEGORY_OTHER
+
 
 def _yaml_load(path: Path) -> Any:
     if YAML is None:
@@ -1216,6 +1265,7 @@ def _yaml_load(path: Path) -> Any:
         return yaml.load(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise WorkbenchError(f"Could not parse project configuration {path}: {exc}") from exc
+
 
 def _yaml_write(path: Path, data: Mapping[str, Any]) -> None:
     if YAML is None:
@@ -1239,6 +1289,7 @@ def _yaml_write(path: Path, data: Mapping[str, Any]) -> None:
                 temp.unlink()
             except OSError:
                 pass
+
 
 def load_project_path_settings(path: Path) -> tuple[str | None, str | None, str | None]:
     """Load the configured project, source, and target directory strings.
@@ -1376,7 +1427,10 @@ def save_project_paths(path: Path, source: Path, target: Path) -> None:
     data.setdefault("patterns", [])
     _yaml_write(path, data)
 
-def load_project_config(path: Path) -> tuple[list[PatternRule], set[str], bool, bool, bool, list[str]]:
+
+def load_project_config(
+    path: Path,
+) -> tuple[list[PatternRule], set[str], bool, bool, bool, list[str]]:
     patterns: list[PatternRule] = []
     diagnostics: list[str] = []
     excluded = set(DEFAULT_EXCLUDED_DIRS)
@@ -1404,7 +1458,9 @@ def load_project_config(path: Path) -> tuple[list[PatternRule], set[str], bool, 
     scan = root.get("scan", {}) or {}
     if isinstance(scan, Mapping):
         raw_excludes = scan.get("exclude_dirs")
-        if isinstance(raw_excludes, Sequence) and not isinstance(raw_excludes, (str, bytes, bytearray)):
+        if isinstance(raw_excludes, Sequence) and not isinstance(
+            raw_excludes, (str, bytes, bytearray)
+        ):
             excluded = {str(item) for item in raw_excludes}
 
     display = root.get("display", {}) or {}
@@ -1416,9 +1472,7 @@ def load_project_config(path: Path) -> tuple[list[PatternRule], set[str], bool, 
         # the default to OFF, so old generated configs receive the new default
         # once; users can explicitly re-enable it from Display Filters.
         mute_non_focused = (
-            bool(display.get("mute_non_focused", False))
-            if config_version >= 7
-            else False
+            bool(display.get("mute_non_focused", False)) if config_version >= 7 else False
         )
 
     raw_patterns = root.get("patterns", []) or []
@@ -1452,7 +1506,8 @@ def load_project_config(path: Path) -> tuple[list[PatternRule], set[str], bool, 
                 test_regex=test_regex,
                 dev_regex=dev_regex,
                 files=(),
-                category=str(raw.get("category", "")).strip() or _category_for_kind_or_name(kind, name),
+                category=str(raw.get("category", "")).strip()
+                or _category_for_kind_or_name(kind, name),
                 enabled=bool(raw.get("enabled", False)),
                 kind=kind,
                 source=str(path),
@@ -1468,6 +1523,7 @@ def load_project_config(path: Path) -> tuple[list[PatternRule], set[str], bool, 
             existing.enabled = existing.enabled or candidate.enabled
     patterns.extend(by_signature.values())
     return patterns, excluded, hide_whitespace, hide_mapping_order, mute_non_focused, diagnostics
+
 
 def save_project_config(
     path: Path,
@@ -1523,11 +1579,13 @@ def save_project_config(
     data["patterns"] = raw_patterns
     _yaml_write(path, data)
 
+
 def init_project_config(path: Path) -> None:
     if path.exists():
         raise WorkbenchError(f"Refusing to overwrite existing project configuration: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(PROJECT_CONFIG_TEMPLATE, encoding="utf-8")
+
 
 def _pattern_rule_id(
     kind: str,
@@ -1540,6 +1598,7 @@ def _pattern_rule_id(
         digest.update(item.encode("utf-8", errors="surrogatepass"))
         digest.update(b"\0")
     return digest.hexdigest()[:20]
+
 
 def _pattern_matches_block(
     rule: PatternRule,
@@ -1558,6 +1617,7 @@ def _pattern_matches_block(
         rule.dev_compiled.search(line) for line in new_changed
     )
 
+
 def _whitespace_normalized_lines(lines: Sequence[str]) -> list[str]:
     normalized: list[str] = []
     for line in lines:
@@ -1565,6 +1625,7 @@ def _whitespace_normalized_lines(lines: Sequence[str]) -> list[str]:
         if compact:
             normalized.append(compact)
     return normalized
+
 
 def is_whitespace_only_block(
     tag: str,
@@ -1582,10 +1643,10 @@ def is_whitespace_only_block(
         return bool(old_lines) and not any(line.strip() for line in old_lines)
     if tag != "replace":
         return False
-    return (
-        list(old_lines) != list(new_lines)
-        and _whitespace_normalized_lines(old_lines) == _whitespace_normalized_lines(new_lines)
-    )
+    return list(old_lines) != list(new_lines) and _whitespace_normalized_lines(
+        old_lines
+    ) == _whitespace_normalized_lines(new_lines)
+
 
 _RELEASE_REVIEW_RE = re.compile(
     r"(?:api.?version|app.?version|version|chart|image|image.?tag|tag|digest|commit|sha(?:256)?|revision|git.?ref|dependency)",
@@ -1597,6 +1658,7 @@ _OPERATIONAL_REVIEW_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def _nearby_change_context(lines: Sequence[str], start: int, end: int) -> str:
     """Return only a directly associated scalar label, not arbitrary nearby YAML."""
     del end
@@ -1605,6 +1667,7 @@ def _nearby_change_context(lines: Sequence[str], start: int, end: int) -> str:
     previous = lines[start - 1].strip()
     match = re.match(r"^-?\s*name\s*:\s*(.+?)\s*$", previous, re.IGNORECASE)
     return match.group(1).strip("\"'") if match else ""
+
 
 def always_review_reason(
     tag: str,
@@ -1640,6 +1703,7 @@ def always_review_reason(
         return "Replica, resource, or security updates"
     return None
 
+
 def classify_block(
     relative_path: str,
     tag: str,
@@ -1655,11 +1719,13 @@ def classify_block(
         matched.extend(
             rule.name
             for rule in patterns
-            if rule.enabled and _pattern_matches_block(rule, relative_path, tag, old_lines, new_lines)
+            if rule.enabled
+            and _pattern_matches_block(rule, relative_path, tag, old_lines, new_lines)
         )
     if hide_whitespace and is_whitespace_only_block(tag, old_lines, new_lines):
         matched.append("Whitespace-only")
     return tuple(sorted(set(matched)))
+
 
 _DIFF_MAPPING_SCALAR_RE = re.compile(
     r"^(?P<indent>\s*)(?P<key>[^:#][^:]*?)\s*:\s*(?P<value>.*?)\s*$"
@@ -1668,6 +1734,7 @@ _DIFF_MAPPING_SCALAR_RE = re.compile(
 _DIFF_LIST_SCALAR_RE = re.compile(r"^(?P<indent>\s*)-\s+(?P<value>.*?)\s*$")
 
 _DIFF_LIST_MAPPING_VALUE_RE = re.compile(r"^[^\s'\"{}\[\]][^:]*:\s(?:.*)$")
+
 
 def _diff_scalar_identity(line: str) -> tuple[str, str] | None:
     """Return a conservative identity for a simple mapping scalar line.
@@ -1688,6 +1755,7 @@ def _diff_scalar_identity(line: str) -> tuple[str, str] | None:
         return None
     return match.group("indent"), key
 
+
 def _diff_list_scalar_indent(line: str) -> str | None:
     """Return indentation for one unambiguous plain scalar list item.
 
@@ -1707,6 +1775,7 @@ def _diff_list_scalar_indent(line: str) -> str | None:
     if _DIFF_LIST_MAPPING_VALUE_RE.match(value):
         return None
     return match.group("indent")
+
 
 def _append_gap_opcode(
     output: list[tuple[str, int, int, int, int]],
@@ -1734,30 +1803,47 @@ def _append_gap_opcode(
     # single replace block rather than guessing how unrelated lines correspond.
     if old_count == new_count and old_count > 1:
         identities = [
-            (_diff_scalar_identity(old_lines[old_index]), _diff_scalar_identity(new_lines[new_index]))
+            (
+                _diff_scalar_identity(old_lines[old_index]),
+                _diff_scalar_identity(new_lines[new_index]),
+            )
             for old_index, new_index in zip(range(i1, i2), range(j1, j2))
         ]
-        if all(old_identity is not None and old_identity == new_identity for old_identity, new_identity in identities):
+        if all(
+            old_identity is not None and old_identity == new_identity
+            for old_identity, new_identity in identities
+        ):
             for offset in range(old_count):
-                output.append(("replace", i1 + offset, i1 + offset + 1, j1 + offset, j1 + offset + 1))
+                output.append(
+                    ("replace", i1 + offset, i1 + offset + 1, j1 + offset, j1 + offset + 1)
+                )
             return
 
         # Equal-length runs of plain scalar list items are safe to compare by
         # position. Requiring one shared indentation level on both sides keeps
         # nested or structurally mixed YAML grouped rather than guessed.
         list_indents = [
-            (_diff_list_scalar_indent(old_lines[old_index]), _diff_list_scalar_indent(new_lines[new_index]))
+            (
+                _diff_list_scalar_indent(old_lines[old_index]),
+                _diff_list_scalar_indent(new_lines[new_index]),
+            )
             for old_index, new_index in zip(range(i1, i2), range(j1, j2))
         ]
         if (
-            all(old_indent is not None and old_indent == new_indent for old_indent, new_indent in list_indents)
+            all(
+                old_indent is not None and old_indent == new_indent
+                for old_indent, new_indent in list_indents
+            )
             and len({old_indent for old_indent, _ in list_indents}) == 1
         ):
             for offset in range(old_count):
-                output.append(("replace", i1 + offset, i1 + offset + 1, j1 + offset, j1 + offset + 1))
+                output.append(
+                    ("replace", i1 + offset, i1 + offset + 1, j1 + offset, j1 + offset + 1)
+                )
             return
 
     output.append(("replace", i1, i2, j1, j2))
+
 
 def _refine_mixed_replace(
     old_lines: Sequence[str],
@@ -1794,8 +1880,7 @@ def _refine_mixed_replace(
     unique_pairs = [
         (old_positions[0], new_identity_positions[identity][0], identity)
         for identity, old_positions in old_identity_positions.items()
-        if len(old_positions) == 1
-        and len(new_identity_positions.get(identity, ())) == 1
+        if len(old_positions) == 1 and len(new_identity_positions.get(identity, ())) == 1
     ]
     if not unique_pairs:
         output: list[tuple[str, int, int, int, int]] = []
@@ -1810,7 +1895,9 @@ def _refine_mixed_replace(
     new_identities = [identity for _, _, identity in new_ordered_pairs]
     matcher = difflib.SequenceMatcher(None, old_identities, new_identities, autojunk=False)
 
-    pair_by_identity = {identity: (old_index, new_index) for old_index, new_index, identity in unique_pairs}
+    pair_by_identity = {
+        identity: (old_index, new_index) for old_index, new_index, identity in unique_pairs
+    }
     anchors: list[tuple[int, int]] = []
     for match in matcher.get_matching_blocks():
         for offset in range(match.size):
@@ -1842,6 +1929,7 @@ def _refine_mixed_replace(
     _append_gap_opcode(output, old_lines, new_lines, old_cursor, i2, new_cursor, j2)
     return output
 
+
 def refined_opcodes(
     old_lines: Sequence[str],
     new_lines: Sequence[str],
@@ -1855,10 +1943,7 @@ def refined_opcodes(
         "Raw difflib alignment completed",
         file=debug_label,
         opcode_count=len(raw_opcodes),
-        opcodes=[
-            (tag, i1 + 1, i2, j1 + 1, j2)
-            for tag, i1, i2, j1, j2 in raw_opcodes
-        ],
+        opcodes=[(tag, i1 + 1, i2, j1 + 1, j2) for tag, i1, i2, j1, j2 in raw_opcodes],
     )
     output: list[tuple[str, int, int, int, int]] = []
     for tag, i1, i2, j1, j2 in raw_opcodes:
@@ -1879,6 +1964,7 @@ def refined_opcodes(
             output.append((tag, i1, i2, j1, j2))
     return output
 
+
 def _scalar_signature(value: Any) -> tuple[str, Any] | None:
     """Return a stable signature for plain YAML scalar values only."""
     if value is None:
@@ -1892,6 +1978,7 @@ def _scalar_signature(value: Any) -> tuple[str, Any] | None:
     if isinstance(value, str):
         return ("str", str(value))
     return None
+
 
 def _mapping_scalar_line_entries(
     text: str,
@@ -1986,6 +2073,7 @@ def _mapping_scalar_line_entries(
     )
     return MappingScalarAnalysis(entries=entries)
 
+
 def _logical_block(
     *,
     source: ChangeBlock,
@@ -2017,6 +2105,7 @@ def _logical_block(
             source.new_end,
         ),
     )
+
 
 def _reconcile_mapping_order_blocks(
     blocks: Sequence[ChangeBlock],
@@ -2253,6 +2342,7 @@ def _reconcile_mapping_order_blocks(
     )
     return MappingOrderResult(blocks=output)
 
+
 def _opcode_coordinate_key(block: ChangeBlock) -> tuple[str, int, int, int, int]:
     return block.opcode_key or (
         block.tag,
@@ -2261,6 +2351,7 @@ def _opcode_coordinate_key(block: ChangeBlock) -> tuple[str, int, int, int, int]
         block.new_start,
         block.new_end,
     )
+
 
 def compute_filter_result(
     test_text: str,
@@ -2409,6 +2500,7 @@ def compute_filter_result(
         mapping_order_unavailable_reason=mapping_order_unavailable_reason,
     )
 
+
 _YAML_SCALAR_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[^:#][^:]*?)\s*:\s*(?P<value>.*?)\s*$")
 
 _LIST_SCALAR_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<value>.*?)\s*$")
@@ -2434,11 +2526,13 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 
+
 def _strip_scalar_quotes_and_comment(value: str) -> str:
     value = re.sub(r"\s+#.*$", "", value).strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         value = value[1:-1]
     return value.strip()
+
 
 def _parse_scalar_line(line: str) -> tuple[str, str] | None:
     match = _YAML_SCALAR_RE.match(line)
@@ -2448,6 +2542,7 @@ def _parse_scalar_line(line: str) -> tuple[str, str] | None:
     if list_match:
         return "<list-item>", _strip_scalar_quotes_and_comment(list_match.group("value"))
     return None
+
 
 def _url_parts(value: str) -> tuple[str, str] | None:
     try:
@@ -2463,13 +2558,16 @@ def _url_parts(value: str) -> tuple[str, str] | None:
         return chained.group("scheme").rstrip(":").lower(), chained.group("host").lower()
     return None
 
+
 def _host_value(value: str) -> str | None:
     match = _HOST_PORT_RE.fullmatch(value)
     return match.group("host").lower() if match else None
 
+
 def _ip_value(value: str) -> str | None:
     match = _IPV4_PORT_RE.fullmatch(value)
     return match.group("ip") if match else None
+
 
 def _apps_domain(host: str) -> str | None:
     lowered = host.lower()
@@ -2479,11 +2577,13 @@ def _apps_domain(host: str) -> str | None:
         return None
     return lowered[index + 1 :]
 
+
 def _line_regex_for_exact_scalar(key: str, value: str) -> str:
     escaped_value = re.escape(value)
     if key == "<list-item>":
         return rf"^\s*-\s*[\"']?{escaped_value}[\"']?\s*(?:#.*)?$"
     return rf"^\s*{re.escape(key)}\s*:\s*[\"']?{escaped_value}[\"']?\s*(?:#.*)?$"
+
 
 def _line_regex_for_url_domain(key: str, domain: str) -> str:
     prefix = r"^\s*-\s*" if key == "<list-item>" else rf"^\s*{re.escape(key)}\s*:\s*"
@@ -2493,6 +2593,7 @@ def _line_regex_for_url_domain(key: str, domain: str) -> str:
         rf"[\"']?\s*(?:#.*)?$"
     )
 
+
 def _line_regex_for_host_domain(key: str, domain: str) -> str:
     prefix = r"^\s*-\s*" if key == "<list-item>" else rf"^\s*{re.escape(key)}\s*:\s*"
     return (
@@ -2500,14 +2601,17 @@ def _line_regex_for_host_domain(key: str, domain: str) -> str:
         rf"[\"']?\s*(?:#.*)?$"
     )
 
+
 def _line_prefix_regex(key: str) -> str:
     return r"^\s*-\s*" if key == "<list-item>" else rf"^\s*{re.escape(key)}\s*:\s*"
+
 
 def _line_regex_for_url_shape(key: str) -> str:
     return (
         rf"(?i){_line_prefix_regex(key)}[\"']?(?:[a-z][a-z0-9+.-]*:){{1,2}}//[^\s\"']+"
         rf"[\"']?\s*(?:#.*)?$"
     )
+
 
 def _line_regex_for_host_shape(key: str) -> str:
     return (
@@ -2516,6 +2620,7 @@ def _line_regex_for_host_shape(key: str) -> str:
         rf"[\"']?\s*(?:#.*)?$"
     )
 
+
 def _line_regex_for_ip_shape(key: str) -> str:
     return (
         rf"{_line_prefix_regex(key)}[\"']?"
@@ -2523,8 +2628,10 @@ def _line_regex_for_ip_shape(key: str) -> str:
         rf"(?::\d+)?[\"']?\s*(?:#.*)?$"
     )
 
+
 def _line_regex_for_fragment(key: str, fragment: str) -> str:
     return rf"{_line_prefix_regex(key)}.*{re.escape(fragment)}.*$"
+
 
 def _scalar_fragment_pairs(old_value: str, new_value: str) -> list[tuple[str, str]]:
     """Return conservative literal substitutions inside one scalar value pair.
@@ -2576,8 +2683,10 @@ def _scalar_fragment_pairs(old_value: str, new_value: str) -> list[tuple[str, st
     # each replacement prevents a single URL from flooding the suggestion list.
     return sorted(candidates, key=lambda item: (-(len(item[0]) + len(item[1])), item))[:3]
 
+
 def _short_pattern_value(value: str, limit: int = 48) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
 
 def _build_pattern_example(record: FileRecord, block: ChangeBlock) -> PatternExample:
     old_all = record.test_text.splitlines()
@@ -2594,8 +2703,10 @@ def _build_pattern_example(record: FileRecord, block: ChangeBlock) -> PatternExa
         new_context_after=new_all[block.new_end] if block.new_end < len(new_all) else None,
     )
 
+
 def _line_regex_for_any_fragment(fragment: str) -> str:
     return rf"(?i)^.*{re.escape(fragment)}.*$"
+
 
 def _looks_like_environment_substitution(
     old_fragment: str,
@@ -2639,6 +2750,7 @@ def _looks_like_environment_substitution(
     }
     return old_lower in environment_words and new_lower in environment_words
 
+
 def _candidate_qualifies(
     matches: Sequence[tuple[FileRecord, ChangeBlock]],
     minimum_matches: int,
@@ -2646,9 +2758,8 @@ def _candidate_qualifies(
     file_count = len({record.relative_path for record, _ in matches})
     return len(matches) >= minimum_matches or file_count >= MIN_PATTERN_FILES
 
-def _category_for_scalar_pattern(
-    key: str, old_value: str, new_value: str
-) -> str:
+
+def _category_for_scalar_pattern(key: str, old_value: str, new_value: str) -> str:
     key_text = key.lower()
     if re.search(r"(?:namespace|cluster|region|environment|profile|site|location|^env$)", key_text):
         return CATEGORY_ENVIRONMENT
@@ -2660,11 +2771,15 @@ def _category_for_scalar_pattern(
         return CATEGORY_ENDPOINTS
     if re.search(r"(?:url|uri|host|hostname|endpoint|address|\bip\b|port)", key_text):
         return CATEGORY_ENDPOINTS
-    if re.search(r"(?:user|username|account|principal|client|service.?account|reference|\bref\b|configmap|secret)", key_text):
+    if re.search(
+        r"(?:user|username|account|principal|client|service.?account|reference|\bref\b|configmap|secret)",
+        key_text,
+    ):
         return CATEGORY_USERS_REFERENCES
     if re.search(r"(?:bucket|database|^db$|schema|index|storage|^s3$|table|topic|queue)", key_text):
         return CATEGORY_STORAGE_DATA
     return CATEGORY_OTHER
+
 
 def _inferred_project_pattern_rules(
     block_refs: Sequence[tuple[FileRecord, ChangeBlock]],
@@ -2835,9 +2950,7 @@ def _inferred_project_pattern_rules(
             kind=kind,
             source="suggested",
         )
-        rule_specs.append(
-            (kind_priority.get(kind, 9), -file_count, -len(matched_refs), rule)
-        )
+        rule_specs.append((kind_priority.get(kind, 9), -file_count, -len(matched_refs), rule))
 
     rule_specs.sort(key=lambda item: (item[0], item[1], item[2], item[3].name.lower()))
     rules: list[PatternRule] = []
@@ -2849,6 +2962,7 @@ def _inferred_project_pattern_rules(
             fragment_count += 1
         rules.append(rule)
     return rules
+
 
 def _sample_pattern_examples(
     matches: Sequence[tuple[FileRecord, ChangeBlock]],
@@ -2876,6 +2990,7 @@ def _sample_pattern_examples(
                 break
     return [_build_pattern_example(record, block) for record, block in selected]
 
+
 def discover_project_pattern_candidates(
     records: Sequence[FileRecord],
     saved_patterns: Sequence[PatternRule],
@@ -2898,9 +3013,7 @@ def discover_project_pattern_candidates(
         by_id.setdefault(rule.id, rule)
 
     saved_ids = {rule.id for rule in saved_patterns}
-    entries: list[
-        tuple[PatternCandidate, frozenset[tuple[Any, ...]]]
-    ] = []
+    entries: list[tuple[PatternCandidate, frozenset[tuple[Any, ...]]]] = []
     for rule in by_id.values():
         matching = [
             (record, block)
@@ -2980,10 +3093,9 @@ def discover_project_pattern_candidates(
         for key in match_keys:
             coverage_count[key] += 1
     for candidate, match_keys in kept:
-        candidate.overlap_count = sum(
-            1 for key in match_keys if coverage_count.get(key, 0) > 1
-        )
+        candidate.overlap_count = sum(1 for key in match_keys if coverage_count.get(key, 0) > 1)
     return [candidate for candidate, _ in kept]
+
 
 def discover_always_reviewed_summaries(
     records: Sequence[FileRecord],
@@ -2992,9 +3104,7 @@ def discover_always_reviewed_summaries(
     for record in records:
         if record.equal or record.binary or record.read_error:
             continue
-        result = compute_filter_result(
-            record.test_text, record.dev_text, [], record.relative_path
-        )
+        result = compute_filter_result(record.test_text, record.dev_text, [], record.relative_path)
         for block in result.blocks:
             if block.protected_reason:
                 grouped[block.protected_reason].append((record, block))
@@ -3029,12 +3139,12 @@ def discover_always_reviewed_summaries(
         )
     return output
 
+
 def _line_digest(lines: Sequence[str]) -> str | None:
     if not lines:
         return None
-    return hashlib.sha256(
-        "\n".join(lines).encode("utf-8", errors="surrogatepass")
-    ).hexdigest()
+    return hashlib.sha256("\n".join(lines).encode("utf-8", errors="surrogatepass")).hexdigest()
+
 
 def change_tracking_tokens(block: ChangeBlock) -> set[str]:
     """Return stable session tokens for either side of a changed block."""
@@ -3047,12 +3157,12 @@ def change_tracking_tokens(block: ChangeBlock) -> set[str]:
         tokens.add(f"TEST:{test_digest}")
     return tokens
 
+
 def _context_digest(lines: Sequence[str]) -> str | None:
     if not lines:
         return None
-    return hashlib.sha256(
-        "\n".join(lines).encode("utf-8", errors="surrogatepass")
-    ).hexdigest()
+    return hashlib.sha256("\n".join(lines).encode("utf-8", errors="surrogatepass")).hexdigest()
+
 
 def change_context_tokens(record: FileRecord, block: ChangeBlock, radius: int = 2) -> set[str]:
     """Hash nearby unchanged text without persisting the text itself."""
@@ -3071,6 +3181,7 @@ def change_context_tokens(record: FileRecord, block: ChangeBlock, radius: int = 
             tokens.add(f"{label}:{digest}")
     return tokens
 
+
 def _hydrate_handled_entry(
     entry: HandledChange,
     record: FileRecord,
@@ -3085,21 +3196,27 @@ def _hydrate_handled_entry(
     entry.new_lines = tuple(block.new_lines)
     entry.context_tokens = tuple(sorted(change_context_tokens(record, block)))
 
+
 def change_was_modified(record: FileRecord, block: ChangeBlock) -> bool:
     return bool(record.modified_change_tokens.intersection(change_tracking_tokens(block)))
+
 
 def change_decision_token(block: ChangeBlock) -> str:
     """Return a stable identity for an exact text block at its current location."""
     digest = hashlib.sha256()
     digest.update(block.tag.encode())
-    digest.update(f"\0{block.old_start}:{block.old_end}:{block.new_start}:{block.new_end}\0".encode())
+    digest.update(
+        f"\0{block.old_start}:{block.old_end}:{block.new_start}:{block.new_end}\0".encode()
+    )
     digest.update("\n".join(block.old_lines).encode("utf-8", errors="surrogatepass"))
     digest.update(b"\0DEV\0")
     digest.update("\n".join(block.new_lines).encode("utf-8", errors="surrogatepass"))
     return digest.hexdigest()
 
+
 def change_was_kept(record: FileRecord, block: ChangeBlock) -> bool:
     return change_decision_token(block) in record.kept_change_tokens
+
 
 def record_handled_change(
     record: FileRecord,
@@ -3137,8 +3254,10 @@ def record_handled_change(
         record.modified_change_tokens.update(tracking_tokens)
     return entry
 
+
 def _block_coordinate_key(block: ChangeBlock) -> tuple[str, int, int, int, int]:
     return (block.tag, block.old_start, block.old_end, block.new_start, block.new_end)
+
 
 def match_handled_changes(
     record: FileRecord,
@@ -3178,26 +3297,18 @@ def match_handled_changes(
     for entry in sorted(unused_entries, key=lambda item: item.order, reverse=True):
         entry_tokens = set(entry.tracking_tokens)
         if entry.action == "KEPT TEST":
-            entry_tokens = {
-                token for token in entry_tokens if token.startswith("TEST:")
-            }
+            entry_tokens = {token for token in entry_tokens if token.startswith("TEST:")}
         candidates: list[tuple[int, int, ChangeBlock]] = []
         for block in unused_blocks:
             block_tokens = change_tracking_tokens(block)
             if not entry_tokens.intersection(block_tokens):
                 continue
-            if (
-                entry.action != "KEPT TEST"
-                and entry_tokens
-                and entry_tokens.issubset(block_tokens)
-            ):
+            if entry.action != "KEPT TEST" and entry_tokens and entry_tokens.issubset(block_tokens):
                 # All original sides are back: this is the unhandled original
                 # change, not proof that an earlier apply/edit is still valid.
                 continue
             context_overlap = len(
-                set(entry.context_tokens).intersection(
-                    change_context_tokens(record, block)
-                )
+                set(entry.context_tokens).intersection(change_context_tokens(record, block))
             )
             distance = abs(entry.old_start - block.old_start) + abs(
                 entry.new_start - block.new_start
@@ -3207,13 +3318,9 @@ def match_handled_changes(
             continue
 
         best_context = max(item[0] for item in candidates)
-        context_candidates = [
-            item for item in candidates if item[0] == best_context
-        ]
+        context_candidates = [item for item in candidates if item[0] == best_context]
         best_distance = min(item[1] for item in context_candidates)
-        finalists = [
-            item for item in context_candidates if item[1] == best_distance
-        ]
+        finalists = [item for item in context_candidates if item[1] == best_distance]
         if len(finalists) != 1:
             debug(
                 "Saved review decision was ambiguous and reopened",
@@ -3235,6 +3342,7 @@ def match_handled_changes(
         if entry.order not in matched_orders
     ]
     return assignments, unmatched
+
 
 def reconciled_handled_entries(
     record: FileRecord,
@@ -3259,6 +3367,7 @@ def reconciled_handled_entries(
             retained.append(entry)
     return retained
 
+
 def exact_change_still_present(
     record: FileRecord,
     original: ChangeBlock,
@@ -3275,6 +3384,7 @@ def exact_change_still_present(
     token = change_decision_token(original)
     return any(change_decision_token(block) == token for block in current.blocks)
 
+
 def handled_marker_text(entry: HandledChange, block: ChangeBlock | None = None) -> str:
     if block is None:
         test_range = _range_text(entry.old_start, entry.old_end)
@@ -3282,9 +3392,8 @@ def handled_marker_text(entry: HandledChange, block: ChangeBlock | None = None) 
     else:
         test_range = _range_text(block.old_start, block.old_end)
         dev_range = _range_text(block.new_start, block.new_end)
-    return (
-        f"✓ {entry.action} · TEST {test_range} · DEV {dev_range} · {entry.preview}"
-    )
+    return f"✓ {entry.action} · TEST {test_range} · DEV {dev_range} · {entry.preview}"
+
 
 def _range_text(start: int, end: int) -> str:
     count = end - start
@@ -3294,9 +3403,9 @@ def _range_text(start: int, end: int) -> str:
         return str(start + 1)
     return f"{start + 1}-{end}"
 
+
 def _preview_text(lines: Sequence[str], limit: int = 72) -> str:
     text = next((line.strip() for line in lines if line.strip()), "<blank>")
     if len(text) > limit:
         return text[: limit - 1] + "…"
     return text
-

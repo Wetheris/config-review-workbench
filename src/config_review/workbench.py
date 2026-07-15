@@ -6,25 +6,14 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
-import argparse
-import difflib
-import fnmatch
 import hashlib
 import json
-import os
 import re
-import shlex
-import shutil
-import stat
 import subprocess
-import sys
 import tempfile
-from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
+from typing import Any, Mapping
 
 try:
     import curses
@@ -77,6 +66,7 @@ from .core import (
 from .rendering import (
     review_unified_diff,
 )
+
 
 class Workbench:
     def __init__(self, settings: AppSettings) -> None:
@@ -134,8 +124,7 @@ class Workbench:
 
     def has_review_progress(self) -> bool:
         return any(
-            record.handled_changes or record.resolved_mode == "manual"
-            for record in self.records
+            record.handled_changes or record.resolved_mode == "manual" for record in self.records
         )
 
     def saved_session_summary(self) -> dict[str, Any] | None:
@@ -204,9 +193,7 @@ class Workbench:
             self.save_review_state(record)
         branch, commit = self.checkout_identity
         reviewed_files = sum(
-            1
-            for record in self.records
-            if record.handled_changes or record.resolved
+            1 for record in self.records if record.handled_changes or record.resolved
         )
         metadata = {
             "repository": str(self.git_root or ""),
@@ -355,14 +342,20 @@ class Workbench:
             if counts.active:
                 label = "DIFF" if counts.active == 1 else "DIFFS"
                 return f"DONE MANUALLY · {counts.active} {label}", counts
-            hidden_total = counts.pattern_hidden + counts.whitespace_hidden + counts.mapping_order_hidden
+            hidden_total = (
+                counts.pattern_hidden + counts.whitespace_hidden + counts.mapping_order_hidden
+            )
             if hidden_total:
                 return f"DONE MANUALLY · {hidden_total} HIDDEN", counts
             return "DONE MANUALLY", counts
         if counts.active == 0 and counts.handled:
             return "COMPLETE", counts
-        if counts.active == 0 and (counts.pattern_hidden or counts.whitespace_hidden or counts.mapping_order_hidden):
-            hidden_total = counts.pattern_hidden + counts.whitespace_hidden + counts.mapping_order_hidden
+        if counts.active == 0 and (
+            counts.pattern_hidden or counts.whitespace_hidden or counts.mapping_order_hidden
+        ):
+            hidden_total = (
+                counts.pattern_hidden + counts.whitespace_hidden + counts.mapping_order_hidden
+            )
             return f"FILTERED ONLY · {hidden_total}", counts
         if counts.active == 0:
             # A raw text difference that produced no review block (for example,
@@ -409,8 +402,7 @@ class Workbench:
             return False, str(exc)
         state = "hidden" if self.hide_whitespace else "shown"
         return True, (
-            f"Whitespace-only blocks are now {state} in Focused Diff. "
-            "Full Diff is unchanged."
+            f"Whitespace-only blocks are now {state} in Focused Diff. Full Diff is unchanged."
         )
 
     def set_hide_mapping_order(self, enabled: bool) -> tuple[bool, str]:
@@ -561,9 +553,7 @@ class Workbench:
                 record.relative_path,
                 hide_mapping_order=self.hide_mapping_order,
             )
-            record.handled_changes = reconciled_handled_entries(
-                record, current.blocks
-            )
+            record.handled_changes = reconciled_handled_entries(record, current.blocks)
             SessionStore._rebuild_tracking(record)
 
     def scan(self, *, initial: bool = False) -> None:
@@ -674,10 +664,7 @@ class Workbench:
             return True, ""
 
         current_exists, current_hash = self._test_state(record)
-        if (
-            current_exists != record.initial_test_exists
-            or current_hash != record.initial_test_hash
-        ):
+        if current_exists != record.initial_test_exists or current_hash != record.initial_test_hash:
             return (
                 False,
                 "TEST changed after this run started, before a safe undo snapshot could be "
@@ -780,8 +767,7 @@ class Workbench:
         if externally_changed and not force:
             return (
                 False,
-                "TEST changed outside the tool after its last known action. "
-                "Nothing was undone.",
+                "TEST changed outside the tool after its last known action. Nothing was undone.",
                 True,
             )
 
@@ -900,7 +886,11 @@ class Workbench:
 
         # If incoming content has no final newline but more TEST content follows,
         # add the target file's newline so the next line is not concatenated.
-        if replacement and block.old_end < len(test_raw) and not replacement[-1].endswith(("\n", "\r")):
+        if (
+            replacement
+            and block.old_end < len(test_raw)
+            and not replacement[-1].endswith(("\n", "\r"))
+        ):
             replacement[-1] += newline
 
         # Inserting after a non-newline-terminated final TEST line needs a separator.
@@ -914,9 +904,7 @@ class Workbench:
         ):
             test_raw[-1] += newline
 
-        updated = "".join(
-            test_raw[: block.old_start] + replacement + test_raw[block.old_end :]
-        )
+        updated = "".join(test_raw[: block.old_start] + replacement + test_raw[block.old_end :])
         try:
             atomic_write_text(record.test_path, updated)
         except OSError as exc:
@@ -1056,4 +1044,3 @@ class Workbench:
         self.refresh_record(record)
         self._note_tool_file_state(record)
         return True, action
-

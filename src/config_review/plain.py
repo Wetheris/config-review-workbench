@@ -6,25 +6,7 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
-import argparse
-import difflib
-import fnmatch
-import hashlib
-import json
-import os
-import re
-import shlex
-import shutil
-import stat
 import subprocess
-import sys
-import tempfile
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
 
 try:
     import curses
@@ -76,6 +58,7 @@ from .tui import (
     _category_state,
 )
 
+
 def _plain_kind_styles(kind: str, *, mute_non_focused: bool = False) -> tuple[str, ...]:
     if kind in {"remove", "remove_note"}:
         return ("red",)
@@ -107,6 +90,7 @@ def _plain_kind_styles(kind: str, *, mute_non_focused: bool = False) -> tuple[st
         return ("red", "bold")
     return ()
 
+
 def format_display_line(
     line: DisplayLine,
     number_width: int,
@@ -118,8 +102,12 @@ def format_display_line(
     if line.test_line is None and line.dev_line is None:
         return color(body, *_plain_kind_styles(line.kind, mute_non_focused=mute_non_focused))
 
-    test_raw = f"{line.test_line:>{number_width}}" if line.test_line is not None else " " * number_width
-    dev_raw = f"{line.dev_line:>{number_width}}" if line.dev_line is not None else " " * number_width
+    test_raw = (
+        f"{line.test_line:>{number_width}}" if line.test_line is not None else " " * number_width
+    )
+    dev_raw = (
+        f"{line.dev_line:>{number_width}}" if line.dev_line is not None else " " * number_width
+    )
     test_part = color(test_raw, "red") if line.test_line is not None else test_raw
     dev_part = color(dev_raw, "green") if line.dev_line is not None else dev_raw
     marker = "  "
@@ -133,6 +121,7 @@ def format_display_line(
     )
     guide = color("│ ", "yellow", "bold") if selected_guide else ""
     return f"{guide}{test_part} {dev_part} {color('│', 'cyan', 'dim')} {rendered_body}"
+
 
 def print_presentation(
     presentation: DiffPresentation,
@@ -154,9 +143,11 @@ def print_presentation(
             )
         )
 
+
 def _test_snapshot(record: FileRecord) -> tuple[bool, str | None]:
     exists = record.test_path.exists()
     return exists, file_hash(record.test_path) if exists else None
+
 
 def _mark_selected_change_if_edited(
     workbench: Workbench,
@@ -169,7 +160,9 @@ def _mark_selected_change_if_edited(
     if not changed:
         return False, False
     workbench.refresh_record(record)
-    if action != "PULL DEV + EDIT" and exact_change_still_present(record, block, hide_mapping_order=workbench.hide_mapping_order):
+    if action != "PULL DEV + EDIT" and exact_change_still_present(
+        record, block, hide_mapping_order=workbench.hide_mapping_order
+    ):
         return True, False
     handled_action = action
     if action == "PULL DEV + EDIT":
@@ -179,6 +172,7 @@ def _mark_selected_change_if_edited(
         handled_action = "APPLIED DEV" if actual == expected else "ADAPTED FROM DEV"
     workbench.handle_change(record, block, handled_action)
     return True, True
+
 
 def plain_pattern_preview(
     workbench: Workbench,
@@ -263,11 +257,14 @@ def plain_pattern_preview(
             _, message = workbench.set_pattern_enabled(candidate, not candidate.rule.enabled)
             print(message)
 
+
 def plain_display_filters(workbench: Workbench) -> None:
     while True:
         print("\n" + "=" * 100)
         print(color("DISPLAY FILTERS", "magenta", "bold"))
-        print("Filtering affects Focused Diff only; muting is visual in both views. Full Diff hides nothing.")
+        print(
+            "Filtering affects Focused Diff only; muting is visual in both views. Full Diff hides nothing."
+        )
         print(
             f"[1] {'SHOWN' if not workbench.hide_whitespace else 'HIDDEN':<7} "
             "Show whitespace-only changes"
@@ -282,8 +279,7 @@ def plain_display_filters(workbench: Workbench) -> None:
             "lists and unparseable YAML stay visible."
         )
         print(
-            f"[3] {'ON' if workbench.mute_non_focused else 'OFF':<7} "
-            "Mute non-focused diff content"
+            f"[3] {'ON' if workbench.mute_non_focused else 'OFF':<7} Mute non-focused diff content"
         )
         print(
             "    Off by default. Keeps the selected change bright and softens surrounding "
@@ -301,15 +297,12 @@ def plain_display_filters(workbench: Workbench) -> None:
             _, message = workbench.set_hide_whitespace(not workbench.hide_whitespace)
             print(message)
         elif choice == "2":
-            _, message = workbench.set_hide_mapping_order(
-                not workbench.hide_mapping_order
-            )
+            _, message = workbench.set_hide_mapping_order(not workbench.hide_mapping_order)
             print(message)
         elif choice == "3":
-            _, message = workbench.set_mute_non_focused(
-                not workbench.mute_non_focused
-            )
+            _, message = workbench.set_mute_non_focused(not workbench.mute_non_focused)
             print(message)
+
 
 def plain_pattern_manager(workbench: Workbench) -> None:
     while True:
@@ -407,8 +400,13 @@ def plain_pattern_manager(workbench: Workbench) -> None:
         if candidate is not None:
             plain_pattern_preview(workbench, candidate.rule.id)
 
+
 def plain_file_actions(workbench: Workbench, record: FileRecord) -> bool:
-    copy_label = "Copy the complete DEV file to TEST" if record.dev_exists else "Delete TEST because DEV is absent"
+    copy_label = (
+        "Copy the complete DEV file to TEST"
+        if record.dev_exists
+        else "Delete TEST because DEV is absent"
+    )
     print("\nFILE ACTIONS")
     print(f"[c] {copy_label}")
     print("[b] Back")
@@ -430,6 +428,7 @@ def plain_file_actions(workbench: Workbench, record: FileRecord) -> bool:
     _, message = workbench.copy_dev_to_test(record)
     print(message)
     return True
+
 
 def plain_review_actions(
     workbench: Workbench,
@@ -465,7 +464,11 @@ def plain_review_actions(
 
         selected_change = presentation.selected_change or 0
         print("\n" + "=" * 100)
-        print(color(f"REVIEW ACTIONS · ACTIVE CHANGE {selected_change + 1}/{count}", "magenta", "bold"))
+        print(
+            color(
+                f"REVIEW ACTIONS · ACTIVE CHANGE {selected_change + 1}/{count}", "magenta", "bold"
+            )
+        )
         print(
             color(
                 f"{record.relative_path} · TEST {_range_text(block.old_start, block.old_end)} · "
@@ -499,13 +502,9 @@ def plain_review_actions(
             selected_change = (selected_change - 1) % count
             continue
         if choice == "[":
-            return ReviewMenuResult(
-                selected_change, changed=changed_any, file_delta=-1
-            )
+            return ReviewMenuResult(selected_change, changed=changed_any, file_delta=-1)
         if choice == "]":
-            return ReviewMenuResult(
-                selected_change, changed=changed_any, file_delta=1
-            )
+            return ReviewMenuResult(selected_change, changed=changed_any, file_delta=1)
         if lowered == "s":
             workbench.handle_change(record, block, "KEPT TEST")
             print("Kept TEST; the change moved to session history.")
@@ -537,6 +536,7 @@ def plain_review_actions(
         elif file_changed:
             print("TEST changed, but the selected change remains active.")
         changed_any = changed_any or file_changed
+
 
 def plain_detail(workbench: Workbench, record: FileRecord) -> str:
     expand_filtered = False
@@ -603,7 +603,11 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
         else:
             if mode == "focused" and presentation.handled_count:
                 note = "No active diffs remain. This file is complete."
-            elif mode == "focused" and (presentation.pattern_hidden_count or presentation.whitespace_hidden_count or presentation.mapping_order_hidden_count):
+            elif mode == "focused" and (
+                presentation.pattern_hidden_count
+                or presentation.whitespace_hidden_count
+                or presentation.mapping_order_hidden_count
+            ):
                 note = "No active diffs; remaining differences are FILTERED ONLY."
             elif mode == "focused":
                 note = "No active review blocks were produced; inspect Full Diff."
@@ -676,16 +680,24 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
                 print("No active diffs remain; this file is already automatically complete.")
             continue
         if choice == "u":
-            answer = input(
-                "Undo this run's file edits and review progress? Project patterns stay unchanged. [y/N]: "
-            ).strip().lower()
+            answer = (
+                input(
+                    "Undo this run's file edits and review progress? Project patterns stay unchanged. [y/N]: "
+                )
+                .strip()
+                .lower()
+            )
             if answer != "y":
                 continue
             changed, message, needs_confirmation = workbench.undo_session_changes(record)
             if needs_confirmation:
-                answer = input(
-                    "TEST changed outside the tool. Restore the session-start copy anyway? [y/N]: "
-                ).strip().lower()
+                answer = (
+                    input(
+                        "TEST changed outside the tool. Restore the session-start copy anyway? [y/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
                 if answer == "y":
                     changed, message, _ = workbench.undo_session_changes(record, force=True)
             print(message)
@@ -724,6 +736,7 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
                 return "next_file"
             selected_change = result.selected_change
 
+
 def plain_startup_session_prompt(workbench: Workbench) -> bool:
     if not workbench.session.has_saved:
         return True
@@ -743,9 +756,17 @@ def plain_startup_session_prompt(workbench: Workbench) -> bool:
             f"{summary['total_handled']} handled changes"
         )
         if summary["exact"]:
-            print(color("The saved review exactly matches the current checkout and filters.", "green"))
+            print(
+                color("The saved review exactly matches the current checkout and filters.", "green")
+            )
         else:
-            print(color("The checkout or comparison changed since this review was saved.", "yellow", "bold"))
+            print(
+                color(
+                    "The checkout or comparison changed since this review was saved.",
+                    "yellow",
+                    "bold",
+                )
+            )
             print(
                 color(
                     f"{summary['verified_handled']}/{summary['total_handled']} handled changes "
@@ -771,6 +792,7 @@ def plain_startup_session_prompt(workbench: Workbench) -> bool:
             print("Deleted the last review session and started fresh.")
             return True
 
+
 def plain_exit_session_prompt(workbench: Workbench) -> bool:
     try:
         path = workbench.save_session()
@@ -779,6 +801,7 @@ def plain_exit_session_prompt(workbench: Workbench) -> bool:
         return False
     print(f"Saved review session to {path}")
     return True
+
 
 def run_plain(workbench: Workbench) -> int:
     if not plain_startup_session_prompt(workbench):
@@ -838,9 +861,7 @@ def run_plain(workbench: Workbench) -> int:
                 styles = ()
             padded_states = f"{states:<24}"
             state_text = (
-                color(padded_states, "red", "bold")
-                if record.test_symlink_path
-                else padded_states
+                color(padded_states, "red", "bold") if record.test_symlink_path else padded_states
             )
             print(
                 f"[{index:>2}] {color(f'{status_text:<30}', *styles)} "
@@ -874,16 +895,24 @@ def run_plain(workbench: Workbench) -> int:
                 continue
             if 0 <= undo_index < len(records):
                 record = records[undo_index]
-                answer = input(
-                    "Undo this run's file edits and review progress? Project patterns stay unchanged. [y/N]: "
-                ).strip().lower()
+                answer = (
+                    input(
+                        "Undo this run's file edits and review progress? Project patterns stay unchanged. [y/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
                 if answer != "y":
                     continue
                 changed, message, needs_confirmation = workbench.undo_session_changes(record)
                 if needs_confirmation:
-                    answer = input(
-                        "TEST changed outside the tool. Restore the session-start copy anyway? [y/N]: "
-                    ).strip().lower()
+                    answer = (
+                        input(
+                            "TEST changed outside the tool. Restore the session-start copy anyway? [y/N]: "
+                        )
+                        .strip()
+                        .lower()
+                    )
                     if answer == "y":
                         changed, message, _ = workbench.undo_session_changes(record, force=True)
                 print(message)
@@ -949,4 +978,3 @@ def run_plain(workbench: Workbench) -> int:
                     selected = (selected - 1) % len(records)
                     continue
                 break
-

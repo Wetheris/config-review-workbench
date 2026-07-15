@@ -38,9 +38,10 @@ def test_paths_are_saved_as_one_project_and_survive_config_writes(tmp_path: Path
 
     save_project_paths(config, source, target)
     assert load_project_path_settings(config) == ("configs", "dev", "test")
-    assert resolve_configured_project_paths(
-        config, *load_project_path_settings(config)
-    ) == (source.resolve(), target.resolve())
+    assert resolve_configured_project_paths(config, *load_project_path_settings(config)) == (
+        source.resolve(),
+        target.resolve(),
+    )
 
     save_project_config(
         config,
@@ -101,7 +102,9 @@ def test_manual_setup_asks_for_only_project_directory(tmp_path: Path, monkeypatc
     tool_root.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "discover_nearby_dev_test_pairs", lambda _base: [])
-    monkeypatch.setattr(cli, "_directory_input", lambda _prompt="": "deployment-configurations/eids")
+    monkeypatch.setattr(
+        cli, "_directory_input", lambda _prompt="": "deployment-configurations/eids"
+    )
     answers = iter(["yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 

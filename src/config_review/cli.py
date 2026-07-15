@@ -7,25 +7,11 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 from __future__ import annotations
 
 import argparse
-import difflib
-import fnmatch
 import glob
-import hashlib
-import json
 import os
-import re
-import shlex
-import shutil
-import stat
-import subprocess
 import sys
-import tempfile
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
+from typing import Sequence
 
 try:
     import curses
@@ -43,7 +29,6 @@ except ImportError:
 from . import core as _core
 from .core import (
     AppSettings,
-    DEBUG_LOG_PATH,
     DEFAULT_EXCLUDED_DIRS,
     DEFAULT_PROJECT_CONFIG,
     VERSION,
@@ -68,13 +53,14 @@ from .self_test import (
     run_regression_tests,
 )
 
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="config-review",
         description=(
             "Interactive source-to-target configuration review workbench with user-approved "
             "project-wide pattern suggestions and an always-unfiltered Full Diff."
-        )
+        ),
     )
     parser.add_argument(
         "--source",
@@ -97,8 +83,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "or the common source/target parent."
         ),
     )
-    parser.add_argument("--context", type=int, default=4, help="Context lines around unified diff hunks")
-    parser.add_argument("--include-secrets", action="store_true", help="Include directories named secrets")
+    parser.add_argument(
+        "--context", type=int, default=4, help="Context lines around unified diff hunks"
+    )
+    parser.add_argument(
+        "--include-secrets", action="store_true", help="Include directories named secrets"
+    )
     parser.add_argument(
         "--edit-command",
         "--manual-editor",
@@ -116,16 +106,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Create a starter .config-review.yaml project configuration and exit",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Disable every workflow that can modify files")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Disable every workflow that can modify files"
+    )
     parser.add_argument(
         "--self-test",
         action="store_true",
         help="Run the built-in regression tests and exit",
     )
     parser.add_argument("--no-tui", action="store_true", help="Use the line-oriented interface")
-    parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors in the line-oriented interface")
-    parser.add_argument("--force-color", action="store_true", help="Force ANSI colors in the line-oriented interface")
-    parser.add_argument("--debug", action="store_true", help="Print diagnostic information to stderr")
+    parser.add_argument(
+        "--no-color", action="store_true", help="Disable ANSI colors in the line-oriented interface"
+    )
+    parser.add_argument(
+        "--force-color",
+        action="store_true",
+        help="Force ANSI colors in the line-oriented interface",
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Print diagnostic information to stderr"
+    )
     parser.add_argument(
         "--debug-log",
         type=Path,
@@ -141,6 +141,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--context must be zero or greater")
     return args
 
+
 def project_base_directory() -> Path:
     """Choose the repository/launch directory used by first-run setup."""
     cwd = Path.cwd().resolve()
@@ -154,10 +155,12 @@ def project_base_directory() -> Path:
         return executable_git_root or executable_parent
     return cwd
 
+
 def resolve_project_config(supplied: Path | None, base: Path) -> Path:
     if supplied is not None:
         return supplied.expanduser().resolve()
     return base / DEFAULT_PROJECT_CONFIG
+
 
 FIRST_RUN_EXCLUDED_DIRS = set(DEFAULT_EXCLUDED_DIRS) | {
     ".venv",
@@ -169,6 +172,7 @@ FIRST_RUN_EXCLUDED_DIRS = set(DEFAULT_EXCLUDED_DIRS) | {
     ".mypy_cache",
 }
 FIRST_RUN_EXCLUDED_DIRS_LOWER = {name.lower() for name in FIRST_RUN_EXCLUDED_DIRS}
+
 
 def discover_dev_test_pairs(base: Path, *, max_depth: int = 6) -> list[tuple[Path, Path]]:
     """Find sibling directories named dev and test beneath the project base."""
@@ -201,6 +205,7 @@ def discover_dev_test_pairs(base: Path, *, max_depth: int = 6) -> list[tuple[Pat
             pair[1].as_posix().lower(),
         ),
     )
+
 
 def _relative_display(path: Path, base: Path) -> str:
     try:
@@ -278,7 +283,11 @@ def _direct_dev_test_pair(project: Path) -> tuple[Path, Path] | None:
 
 
 def _project_for_pair(source: Path, target: Path) -> Path:
-    return source.parent if source.parent == target.parent else Path(os.path.commonpath([source, target]))
+    return (
+        source.parent
+        if source.parent == target.parent
+        else Path(os.path.commonpath([source, target]))
+    )
 
 
 def _confirm_pair(source: Path, target: Path, display_base: Path) -> bool:
@@ -384,6 +393,7 @@ def interactive_first_run_paths(base: Path) -> tuple[Path, Path]:
             return selected
         print("Choose a different project directory.")
 
+
 def resolve_project_paths(
     args: argparse.Namespace,
     config_file: Path,
@@ -412,7 +422,9 @@ def resolve_project_paths(
             save_project_paths(config_file, source, target)
         return source, target, newly_saved
 
-    configured_project, configured_source, configured_target = load_project_path_settings(config_file)
+    configured_project, configured_source, configured_target = load_project_path_settings(
+        config_file
+    )
     if configured_project or (configured_source and configured_target):
         source, target = resolve_configured_project_paths(
             config_file,
@@ -434,6 +446,7 @@ def resolve_project_paths(
     source, target = interactive_first_run_paths(base)
     save_project_paths(config_file, source, target)
     return source, target, True
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
@@ -522,4 +535,3 @@ def main(argv: Sequence[str] | None = None) -> int:
         except curses.error as exc:
             print(f"warning: curses UI failed ({exc}); using line interface", file=sys.stderr)
     return run_plain(workbench)
-

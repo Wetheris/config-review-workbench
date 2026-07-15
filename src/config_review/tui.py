@@ -6,25 +6,10 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
-import argparse
-import difflib
-import fnmatch
-import hashlib
-import json
-import os
 import re
-import shlex
-import shutil
-import stat
 import subprocess
-import sys
-import tempfile
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
+from dataclasses import dataclass
+from typing import Any, Sequence
 
 try:
     import curses
@@ -72,6 +57,7 @@ from .workbench import (
     Workbench,
 )
 
+
 @dataclass(slots=True)
 class PatternManagerRow:
     kind: str  # category | pattern | protected_category | protected
@@ -80,10 +66,12 @@ class PatternManagerRow:
     candidate: PatternCandidate | None = None
     protected: ProtectedChangeSummary | None = None
 
+
 def _category_members(
     candidates: Sequence[PatternCandidate], category: str
 ) -> list[PatternCandidate]:
     return [candidate for candidate in candidates if candidate.rule.category == category]
+
 
 def _category_state(candidates: Sequence[PatternCandidate]) -> str:
     if not candidates:
@@ -95,6 +83,7 @@ def _category_state(candidates: Sequence[PatternCandidate]) -> str:
         return "HIDDEN"
     return "MIXED"
 
+
 def build_pattern_manager_rows(
     candidates: Sequence[PatternCandidate],
     protected: Sequence[ProtectedChangeSummary],
@@ -105,11 +94,7 @@ def build_pattern_manager_rows(
         if not members:
             continue
         pattern_matches = sum(candidate.match_count for candidate in members)
-        file_names = {
-            path
-            for candidate in members
-            for path in candidate.affected_files
-        }
+        file_names = {path for candidate in members for path in candidate.affected_files}
         rows.append(
             PatternManagerRow(
                 kind="category",
@@ -150,6 +135,7 @@ def build_pattern_manager_rows(
         )
     return rows
 
+
 _FOOTER_CATEGORIES = (
     "Resolve:",
     "Edit:",
@@ -166,6 +152,7 @@ _FOOTER_TOKEN_RE = re.compile(
     + "|".join(re.escape(item) for item in _FOOTER_CATEGORIES)
     + r"|accept DEV|ccept DEV|keep TEST)"
 )
+
 
 def footer_segments(text: str) -> list[tuple[str, str]]:
     """Split footer text into a few deliberately narrow style categories."""
@@ -185,6 +172,7 @@ def footer_segments(text: str) -> list[tuple[str, str]]:
             kind = "text"
         output.append((part, kind))
     return output
+
 
 class Tui:
     def __init__(self, workbench: Workbench) -> None:
@@ -244,7 +232,9 @@ class Tui:
         return rows
 
     @staticmethod
-    def _main_row_key(row: MainListRow, records: Sequence[FileRecord]) -> tuple[str, str, int | None] | None:
+    def _main_row_key(
+        row: MainListRow, records: Sequence[FileRecord]
+    ) -> tuple[str, str, int | None] | None:
         if row.record_index is None or row.kind not in {"file", "change"}:
             return None
         return (row.kind, records[row.record_index].relative_path, row.change_index)
@@ -396,7 +386,9 @@ class Tui:
             stdscr.erase()
             saved_commit = str(summary["commit"])
             short_commit = saved_commit[:10] if saved_commit else "no commit"
-            self._add(stdscr, 1, 2, "LOAD LAST REVIEW SESSION?", curses.A_BOLD | self._color_pair(5))
+            self._add(
+                stdscr, 1, 2, "LOAD LAST REVIEW SESSION?", curses.A_BOLD | self._color_pair(5)
+            )
             self._add(stdscr, 3, 2, f"Saved from: {summary['branch']} @ {short_commit}")
             self._add(stdscr, 4, 2, f"Saved:      {summary['saved_at']}")
             self._add(
@@ -408,18 +400,24 @@ class Tui:
             )
             if summary["exact"]:
                 self._add(
-                    stdscr, 7, 2,
+                    stdscr,
+                    7,
+                    2,
                     "The saved session exactly matches the current checkout and filters.",
                     self._color_pair(2) | curses.A_BOLD,
                 )
             else:
                 self._add(
-                    stdscr, 7, 2,
+                    stdscr,
+                    7,
+                    2,
                     "The checkout or comparison changed since this session was saved.",
                     self._color_pair(3) | curses.A_BOLD,
                 )
                 self._add(
-                    stdscr, 8, 2,
+                    stdscr,
+                    8,
+                    2,
                     f"{summary['verified_handled']}/{summary['total_handled']} handled changes "
                     "can still be verified; uncertain changes return to review.",
                     self._color_pair(3),
@@ -467,10 +465,10 @@ class Tui:
             # non-focused and filtered content stays readable while receding.
             if getattr(curses, "COLORS", 0) >= 256 and getattr(curses, "COLOR_PAIRS", 0) > 10:
                 curses.init_pair(6, 167, -1)  # soft red
-                curses.init_pair(7, 71, -1)   # soft green
+                curses.init_pair(7, 71, -1)  # soft green
                 curses.init_pair(8, 245, -1)  # medium gray
-                curses.init_pair(9, 73, -1)   # soft cyan
-                curses.init_pair(10, 133, -1) # soft magenta
+                curses.init_pair(9, 73, -1)  # soft cyan
+                curses.init_pair(10, 133, -1)  # soft magenta
                 self.soft_muted_pairs = True
             elif getattr(curses, "COLOR_PAIRS", 0) > 10:
                 gray = 8 if getattr(curses, "COLORS", 0) >= 16 else curses.COLOR_WHITE
@@ -573,7 +571,8 @@ class Tui:
                         (
                             index
                             for index in selectable_positions
-                            if self._main_row_key(display_rows[index], records) == self.main_selection_key
+                            if self._main_row_key(display_rows[index], records)
+                            == self.main_selection_key
                         ),
                         None,
                     )
@@ -660,11 +659,7 @@ class Tui:
                 expanded = record.relative_path in self.expanded_files
                 disclosure = "▾" if expanded else "▸"
                 self._add(stdscr, y, 2, f"{status_text:<30}", selected_attr | status_attr)
-                states_attr = (
-                    self._color_pair(1) | curses.A_BOLD
-                    if record.test_symlink_path
-                    else 0
-                )
+                states_attr = self._color_pair(1) | curses.A_BOLD if record.test_symlink_path else 0
                 self._add(stdscr, y, 34, f"{states:<22}", selected_attr | states_attr)
                 self._add(
                     stdscr,
@@ -712,7 +707,11 @@ class Tui:
             elif key == ord("]") and records:
                 self.selected = (self.selected + 1) % len(records)
                 self.main_selection_key = ("file", records[self.selected].relative_path, None)
-            elif key == ord(" ") and selected_row is not None and selected_row.record_index is not None:
+            elif (
+                key == ord(" ")
+                and selected_row is not None
+                and selected_row.record_index is not None
+            ):
                 record = records[selected_row.record_index]
                 if record.relative_path in self.expanded_files:
                     self.expanded_files.remove(record.relative_path)
@@ -774,22 +773,14 @@ class Tui:
             )
         if kind == "filtered_remove":
             return (
-                self._muted_red_attr()
-                if self.workbench.mute_non_focused
-                else self._test_red_attr()
+                self._muted_red_attr() if self.workbench.mute_non_focused else self._test_red_attr()
             )
         if kind == "filtered_add":
             return (
-                self._muted_green_attr()
-                if self.workbench.mute_non_focused
-                else self._color_pair(2)
+                self._muted_green_attr() if self.workbench.mute_non_focused else self._color_pair(2)
             )
         if kind == "filtered_context":
-            return (
-                self._muted_text_attr()
-                if self.workbench.mute_non_focused
-                else 0
-            )
+            return self._muted_text_attr() if self.workbench.mute_non_focused else 0
         if kind in {"test_file_header", "dev_file_header"}:
             return curses.A_BOLD
         if kind in {"hunk", "legend", "filter_item", "rule_title"}:
@@ -889,8 +880,14 @@ class Tui:
             )
             x += 2
 
-        test_text = f"{line.test_line:>{number_width}}" if line.test_line is not None else " " * number_width
-        dev_text = f"{line.dev_line:>{number_width}}" if line.dev_line is not None else " " * number_width
+        test_text = (
+            f"{line.test_line:>{number_width}}"
+            if line.test_line is not None
+            else " " * number_width
+        )
+        dev_text = (
+            f"{line.dev_line:>{number_width}}" if line.dev_line is not None else " " * number_width
+        )
         test_attr = self._test_red_attr(dim=True) if muted else self._test_red_attr()
         self._add(
             stdscr,
@@ -1011,7 +1008,9 @@ class Tui:
             if open_review_once:
                 open_review_once = False
                 if selected_block is None:
-                    self.status = "That change is no longer active; showing the refreshed file diff."
+                    self.status = (
+                        "That change is no longer active; showing the refreshed file diff."
+                    )
                 else:
                     result = self.review_action_menu(
                         stdscr,
@@ -1022,7 +1021,9 @@ class Tui:
                     if result.quit:
                         return "quit"
                     if result.file_delta:
-                        self.selected = (self.selected + result.file_delta) % len(self.workbench.records)
+                        self.selected = (self.selected + result.file_delta) % len(
+                            self.workbench.records
+                        )
                         selected_change = 0
                         scroll = horizontal = 0
                         jump_to_selected = True
@@ -1043,7 +1044,11 @@ class Tui:
                         "No active diffs remain. This file is complete; handled changes remain "
                         "in session history."
                     )
-                elif presentation.pattern_hidden_count or presentation.whitespace_hidden_count or presentation.mapping_order_hidden_count:
+                elif (
+                    presentation.pattern_hidden_count
+                    or presentation.whitespace_hidden_count
+                    or presentation.mapping_order_hidden_count
+                ):
                     progress_note = (
                         "No active diffs; remaining differences are hidden by approved filters. "
                         "The file is FILTERED ONLY, not complete."
@@ -1051,7 +1056,9 @@ class Tui:
                 else:
                     progress_note = "No active review blocks were produced; inspect Full Diff."
             else:
-                progress_note = "No active changes remain; Full Diff still shows current handled text."
+                progress_note = (
+                    "No active changes remain; Full Diff still shows current handled text."
+                )
 
             content = presentation.lines
             stdscr.erase()
@@ -1148,9 +1155,7 @@ class Tui:
 
             if mode == "focused":
                 hidden_action = "[h]collapse hidden" if expand_filtered else "[h]expand hidden"
-                view_actions = (
-                    f"[d]full diff  {hidden_action}  [f]display filters  [g]patterns"
-                )
+                view_actions = f"[d]full diff  {hidden_action}  [f]display filters  [g]patterns"
             else:
                 view_actions = "[d]focused diff  [f]display filters  [g]patterns"
             if record.resolved_mode == "manual":
@@ -1220,7 +1225,9 @@ class Tui:
                     if result.quit:
                         return "quit"
                     if result.file_delta:
-                        self.selected = (self.selected + result.file_delta) % len(self.workbench.records)
+                        self.selected = (self.selected + result.file_delta) % len(
+                            self.workbench.records
+                        )
                         selected_change = 0
                         scroll = horizontal = 0
                         jump_to_selected = True
@@ -1235,11 +1242,11 @@ class Tui:
                     self.status = "Reopened the file for review."
                 elif focused_counts.active:
                     counts = self.workbench.mark_complete(record, True)
-                    self.status = (
-                        f"Marked done manually with {counts.active} active diff(s)."
-                    )
+                    self.status = f"Marked done manually with {counts.active} active diff(s)."
                 else:
-                    self.status = "No active diffs remain; this file is already automatically complete."
+                    self.status = (
+                        "No active diffs remain; this file is already automatically complete."
+                    )
             elif key in (ord("u"), ord("U")):
                 if not self.confirm(
                     stdscr,
@@ -1309,8 +1316,7 @@ class Tui:
         options = (
             (
                 "Show whitespace-only changes",
-                "Off by default. Enable to show indentation/spacing-only blocks in "
-                "Focused Diff.",
+                "Off by default. Enable to show indentation/spacing-only blocks in Focused Diff.",
             ),
             (
                 "YAML mapping-order-only changes",
@@ -1349,8 +1355,16 @@ class Tui:
                 else:
                     state = "ON" if enabled else "OFF"
                 state_attr = self._color_pair(3) | curses.A_BOLD if enabled else curses.A_DIM
-                self._add(stdscr, y, 2, f"[{'x' if enabled else ' '}] {label}", selected_attr | curses.A_BOLD)
-                self._add(stdscr, y, max(34, min(width - 18, 48)), state, selected_attr | state_attr)
+                self._add(
+                    stdscr,
+                    y,
+                    2,
+                    f"[{'x' if enabled else ' '}] {label}",
+                    selected_attr | curses.A_BOLD,
+                )
+                self._add(
+                    stdscr, y, max(34, min(width - 18, 48)), state, selected_attr | state_attr
+                )
                 self._add(stdscr, y + 1, 6, description, curses.A_DIM)
 
             self._draw_footer(
@@ -1451,7 +1465,9 @@ class Tui:
                     members = _category_members(candidates, item.category)
                     state = _category_state(members)
                     match_count = sum(candidate.match_count for candidate in members)
-                    file_count = len({path for candidate in members for path in candidate.affected_files})
+                    file_count = len(
+                        {path for candidate in members for path in candidate.affected_files}
+                    )
                     overlap = sum(candidate.overlap_count for candidate in members)
                     attr = selected_attr | curses.A_BOLD | self._color_pair(5)
                     self._add(stdscr, y, 2, f"{state:<10}", attr)
@@ -1466,7 +1482,11 @@ class Tui:
                     state = "HIDDEN" if candidate.rule.enabled else "VISIBLE"
                     attr = selected_attr
                     if index != selected:
-                        attr |= self._color_pair(3) | curses.A_BOLD if candidate.rule.enabled else curses.A_DIM
+                        attr |= (
+                            self._color_pair(3) | curses.A_BOLD
+                            if candidate.rule.enabled
+                            else curses.A_DIM
+                        )
                     saved = " · saved" if candidate.persisted else " · suggested"
                     overlap = str(candidate.overlap_count) if candidate.overlap_count else "—"
                     self._add(stdscr, y, 2, f"{state:<10}", attr)
@@ -1557,7 +1577,11 @@ class Tui:
         scroll = 0
         while True:
             summary = next(
-                (item for item in self.workbench.protected_summaries() if item.name == summary_name),
+                (
+                    item
+                    for item in self.workbench.protected_summaries()
+                    if item.name == summary_name
+                ),
                 None,
             )
             if summary is None:
@@ -1580,12 +1604,28 @@ class Tui:
                 DisplayLine("", "text"),
             ]
             for index, example in enumerate(summary.examples, start=1):
-                lines.append(DisplayLine(f"Example {index} · {example.relative_path}", "filter_item"))
+                lines.append(
+                    DisplayLine(f"Example {index} · {example.relative_path}", "filter_item")
+                )
                 if example.old_context_before is not None:
-                    lines.append(DisplayLine(example.old_context_before, "context", test_line=max(1, example.old_line_number - 1)))
-                lines.append(DisplayLine(example.old_line, "remove", test_line=example.old_line_number))
+                    lines.append(
+                        DisplayLine(
+                            example.old_context_before,
+                            "context",
+                            test_line=max(1, example.old_line_number - 1),
+                        )
+                    )
+                lines.append(
+                    DisplayLine(example.old_line, "remove", test_line=example.old_line_number)
+                )
                 if example.new_context_before is not None:
-                    lines.append(DisplayLine(example.new_context_before, "context", dev_line=max(1, example.new_line_number - 1)))
+                    lines.append(
+                        DisplayLine(
+                            example.new_context_before,
+                            "context",
+                            dev_line=max(1, example.new_line_number - 1),
+                        )
+                    )
                 lines.append(DisplayLine(example.new_line, "add", dev_line=example.new_line_number))
                 lines.append(DisplayLine("", "text"))
 
@@ -1706,7 +1746,9 @@ class Tui:
                             test_line=max(1, example.old_line_number - 1),
                         )
                     )
-                lines.append(DisplayLine(example.old_line, "remove", test_line=example.old_line_number))
+                lines.append(
+                    DisplayLine(example.old_line, "remove", test_line=example.old_line_number)
+                )
                 if example.old_context_after is not None:
                     lines.append(
                         DisplayLine(
@@ -1846,7 +1888,9 @@ class Tui:
                 preview.lines, preview.number_width, width, x=1
             )
             horizontal = max(0, min(horizontal, max_horizontal))
-            for row, line in enumerate(preview.lines[preview_scroll : preview_scroll + body_height]):
+            for row, line in enumerate(
+                preview.lines[preview_scroll : preview_scroll + body_height]
+            ):
                 self._draw_display_line(
                     stdscr,
                     body_top + row,
@@ -1894,13 +1938,9 @@ class Tui:
                 preview_scroll = 0
                 continue
             if key == ord("["):
-                return ReviewMenuResult(
-                    selected_change, changed=changed_any, file_delta=-1
-                )
+                return ReviewMenuResult(selected_change, changed=changed_any, file_delta=-1)
             if key == ord("]"):
-                return ReviewMenuResult(
-                    selected_change, changed=changed_any, file_delta=1
-                )
+                return ReviewMenuResult(selected_change, changed=changed_any, file_delta=1)
             if key == curses.KEY_UP:
                 preview_scroll = max(0, preview_scroll - 1)
                 continue
@@ -2087,7 +2127,8 @@ class Tui:
             return False
 
         self.workbench.refresh_record(record)
-        if action != "PULL DEV + EDIT" and exact_change_still_present(record, block, hide_mapping_order=self.workbench.hide_mapping_order
+        if action != "PULL DEV + EDIT" and exact_change_still_present(
+            record, block, hide_mapping_order=self.workbench.hide_mapping_order
         ):
             self.status = (
                 f"{self.status} TEST changed elsewhere; the selected change remains active."
@@ -2230,7 +2271,9 @@ class Tui:
             height, _ = stdscr.getmaxyx()
             for row, line in enumerate(lines[offset : offset + height - 1]):
                 self._add(stdscr, row, 1, line, curses.A_BOLD if row == 0 else 0)
-            self._draw_footer(stdscr, height - 1, 1, "Navigate: [↑/↓]scroll · any other key returns")
+            self._draw_footer(
+                stdscr, height - 1, 1, "Navigate: [↑/↓]scroll · any other key returns"
+            )
             stdscr.refresh()
             key = stdscr.getch()
             if key == curses.KEY_UP:
@@ -2239,4 +2282,3 @@ class Tui:
                 offset = min(max(0, len(lines) - height + 1), offset + 1)
             else:
                 return
-

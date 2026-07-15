@@ -6,25 +6,7 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
-import argparse
-import difflib
-import fnmatch
-import hashlib
-import json
-import os
-import re
-import shlex
-import shutil
-import stat
-import subprocess
-import sys
-import tempfile
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import urlsplit
+from typing import Any, Mapping, Sequence
 
 try:
     import curses
@@ -59,6 +41,7 @@ from .core import (
     match_handled_changes,
 )
 
+
 def mapping_order_status_text(
     *,
     enabled: bool,
@@ -74,11 +57,14 @@ def mapping_order_status_text(
         return f"mapping order ON · {hidden_count} hidden"
     return "mapping order ON · no order-only changes found"
 
+
 def _line_number_width(old_length: int, new_length: int) -> int:
     return max(4, len(str(max(old_length, new_length, 1))))
 
+
 def _empty_filter_result() -> FilterResult:
     return FilterResult(opcodes=[], blocks=[], hidden=[], visible=[])
+
 
 def grouped_refined_opcodes(
     opcodes: Sequence[tuple[str, int, int, int, int]],
@@ -123,11 +109,13 @@ def grouped_refined_opcodes(
         groups.append(group)
     return groups
 
+
 def _compact_summary_value(value: str, limit: int = 30) -> str:
     rendered = value.strip() or "<blank>"
     if len(rendered) > limit:
         return rendered[: limit - 1] + "…"
     return rendered
+
 
 def change_block_summary(block: ChangeBlock) -> str:
     """Return a short deterministic summary without interpreting YAML structure."""
@@ -144,10 +132,7 @@ def change_block_summary(block: ChangeBlock) -> str:
                 f"list item: {_compact_summary_value(old_value)} → "
                 f"{_compact_summary_value(new_value)}"
             )
-        return (
-            f"{key}: {_compact_summary_value(old_value)} → "
-            f"{_compact_summary_value(new_value)}"
-        )
+        return f"{key}: {_compact_summary_value(old_value)} → {_compact_summary_value(new_value)}"
 
     if block.tag == "delete" and old_parsed:
         key, _value = old_parsed
@@ -156,9 +141,7 @@ def change_block_summary(block: ChangeBlock) -> str:
         key, _value = new_parsed
         return "list item added" if key == "<list-item>" else f"{key} added"
 
-    label = {"replace": "changed", "delete": "removed", "insert": "added"}.get(
-        block.tag, block.tag
-    )
+    label = {"replace": "changed", "delete": "removed", "insert": "added"}.get(block.tag, block.tag)
     if block.old_count <= 1 and block.new_count <= 1:
         if block.old_lines and block.new_lines:
             return f"{_preview_text(block.old_lines, 34)} → {_preview_text(block.new_lines, 34)}"
@@ -167,11 +150,13 @@ def change_block_summary(block: ChangeBlock) -> str:
         return f"added: {_preview_text(block.new_lines, 58)}"
     return f"{label} · {block.old_count} TEST line(s) → {block.new_count} DEV line(s)"
 
+
 def change_block_location(block: ChangeBlock) -> str:
     return (
         f"TEST {_range_text(block.old_start, block.old_end)} · "
         f"DEV {_range_text(block.new_start, block.new_end)}"
     )
+
 
 def _brief_filter_reason(hidden_by: Sequence[str], max_length: int = 54) -> str:
     """Return one concise reason for inline filtered-diff labels.
@@ -203,6 +188,7 @@ def _brief_filter_reason(hidden_by: Sequence[str], max_length: int = 54) -> str:
     if len(primary) > available:
         primary = primary[: available - 1].rstrip() + "…"
     return primary + suffix
+
 
 def _filtered_block_lines(
     *,
@@ -260,6 +246,7 @@ def _filtered_block_lines(
         )
     ]
 
+
 def _selector_text(
     index: int,
     total: int,
@@ -272,6 +259,7 @@ def _selector_text(
         f"TEST {_range_text(block.old_start, block.old_end)} · "
         f"DEV {_range_text(block.new_start, block.new_end)}"
     )
+
 
 def _render_collapsed_focused_body(
     *,
@@ -362,9 +350,7 @@ def _render_collapsed_focused_body(
             add_spaced(
                 [
                     DisplayLine(
-                        handled_marker_text(
-                            handled_by_key[_block_coordinate_key(block)], block
-                        ),
+                        handled_marker_text(handled_by_key[_block_coordinate_key(block)], block),
                         "handled",
                     )
                 ]
@@ -513,6 +499,7 @@ def _render_collapsed_focused_body(
         )
     return change_line_indexes, change_line_ranges, change_blocks
 
+
 def _render_text_diff(
     record: FileRecord,
     context: int,
@@ -540,9 +527,7 @@ def _render_text_diff(
 
     handled_by_key, unmatched_history = match_handled_changes(record, result.blocks)
     active_blocks = [
-        block
-        for block in result.visible
-        if _block_coordinate_key(block) not in handled_by_key
+        block for block in result.visible if _block_coordinate_key(block) not in handled_by_key
     ]
     active_total = len(active_blocks)
     if active_total:
@@ -551,16 +536,13 @@ def _render_text_diff(
         selected_change = 0
 
     hidden_unhandled = [
-        block
-        for block in result.hidden
-        if _block_coordinate_key(block) not in handled_by_key
+        block for block in result.hidden if _block_coordinate_key(block) not in handled_by_key
     ]
     pattern_hidden_count = sum(
         1
         for block in hidden_unhandled
         if any(
-            reason != "Whitespace-only"
-            and not reason.startswith("YAML mapping order")
+            reason != "Whitespace-only" and not reason.startswith("YAML mapping order")
             for reason in block.hidden_by
         )
     )
@@ -610,9 +592,7 @@ def _render_text_diff(
             mapping_order_unavailable_reason=result.mapping_order_unavailable_reason,
         )
 
-    blocks_by_coordinates = {
-        _opcode_coordinate_key(block): block for block in result.blocks
-    }
+    blocks_by_coordinates = {_opcode_coordinate_key(block): block for block in result.blocks}
 
     if filter_enabled and not expand_filtered:
         (
@@ -907,6 +887,7 @@ def _render_text_diff(
         mapping_order_unavailable_reason=result.mapping_order_unavailable_reason,
     )
 
+
 def full_unified_diff(
     record: FileRecord,
     context: int,
@@ -929,6 +910,7 @@ def full_unified_diff(
         selected_change=selected_change,
     )
 
+
 def review_unified_diff(
     record: FileRecord,
     patterns: Sequence[PatternRule],
@@ -949,6 +931,7 @@ def review_unified_diff(
         expand_filtered=expand_filtered,
         selected_change=selected_change,
     )
+
 
 def selected_change_preview(
     record: FileRecord,
@@ -1021,4 +1004,3 @@ def selected_change_preview(
         selected_change=0,
         number_width=number_width,
     )
-
