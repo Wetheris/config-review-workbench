@@ -272,11 +272,11 @@ def plain_display_filters(workbench: Workbench) -> None:
         print("    Hidden by default; Full Diff always preserves the original whitespace.")
         print(
             f"[2] {'HIDDEN' if workbench.hide_mapping_order else 'VISIBLE':<7} "
-            "YAML mapping-order-only changes"
+            "YAML order-only changes"
         )
         print(
-            "    Exact scalar entries under the same parsed parent mapping only; "
-            "lists and unparseable YAML stay visible."
+            "    Exact scalar mapping moves and unique name-keyed list moves; "
+            "changed named items stay visible as one replacement."
         )
         print(
             f"[3] {'ON' if workbench.mute_non_focused else 'OFF':<7} Mute non-focused diff content"
@@ -319,7 +319,7 @@ def plain_pattern_manager(workbench: Workbench) -> None:
         )
         print(
             "Display filters: whitespace "
-            f"{'HIDDEN' if workbench.hide_whitespace else 'VISIBLE'} · mapping order "
+            f"{'HIDDEN' if workbench.hide_whitespace else 'VISIBLE'} · YAML order "
             f"{'HIDDEN' if workbench.hide_mapping_order else 'VISIBLE'} · background "
             f"{'MUTED' if workbench.mute_non_focused else 'FULL BRIGHTNESS'}."
         )
@@ -819,7 +819,7 @@ def run_plain(workbench: Workbench) -> int:
             color(
                 f"Project patterns: {len(workbench.enabled_patterns)} hidden · "
                 f"display filters: whitespace "
-                f"{'hidden' if workbench.hide_whitespace else 'visible'}, mapping order "
+                f"{'hidden' if workbench.hide_whitespace else 'visible'}, YAML order "
                 f"{'hidden' if workbench.hide_mapping_order else 'visible'}, background "
                 f"{'muted' if workbench.mute_non_focused else 'full brightness'}. "
                 "New suggestions remain visible.",

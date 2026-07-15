@@ -32,6 +32,8 @@ from .core import (
     WorkbenchError,
     _SENSITIVE_KEY_RE,
     _block_coordinate_key,
+    _is_yaml_order_continuation,
+    _is_yaml_order_reason,
     _opcode_coordinate_key,
     _parse_scalar_line,
     _preview_text,
@@ -48,14 +50,14 @@ def mapping_order_status_text(
     hidden_count: int,
     unavailable_reason: str | None,
 ) -> str:
-    """Return one of the three explicit mapping-order analysis states."""
+    """Return one of the three explicit YAML-order analysis states."""
     if not enabled:
-        return "mapping order OFF"
+        return "YAML order OFF"
     if unavailable_reason:
-        return f"mapping order UNAVAILABLE · {unavailable_reason}"
+        return f"YAML order UNAVAILABLE · {unavailable_reason}"
     if hidden_count:
-        return f"mapping order ON · {hidden_count} hidden"
-    return "mapping order ON · no order-only changes found"
+        return f"YAML order ON · {hidden_count} hidden"
+    return "YAML order ON · no order-only changes found"
 
 
 def _line_number_width(old_length: int, new_length: int) -> int:
@@ -169,8 +171,8 @@ def _brief_filter_reason(hidden_by: Sequence[str], max_length: int = 54) -> str:
     for reason in hidden_by:
         if reason == "Whitespace-only":
             label = "Whitespace only"
-        elif reason.startswith("YAML mapping order"):
-            label = "YAML mapping order"
+        elif _is_yaml_order_reason(reason):
+            label = "YAML order"
         else:
             label = reason.strip()
         if label and label not in normalized:
@@ -203,7 +205,7 @@ def _filtered_block_lines(
     expanded: bool,
 ) -> list[DisplayLine]:
     """Render a filtered block as one compact marker or an expanded inline diff."""
-    if tuple(hidden_by) == ("YAML mapping order continuation",):
+    if _is_yaml_order_continuation(hidden_by):
         return []
 
     reason = _brief_filter_reason(hidden_by)
@@ -542,7 +544,7 @@ def _render_text_diff(
         1
         for block in hidden_unhandled
         if any(
-            reason != "Whitespace-only" and not reason.startswith("YAML mapping order")
+            reason != "Whitespace-only" and not _is_yaml_order_reason(reason)
             for reason in block.hidden_by
         )
     )
@@ -550,7 +552,10 @@ def _render_text_diff(
         1 for block in hidden_unhandled if "Whitespace-only" in block.hidden_by
     )
     mapping_order_hidden_count = sum(
-        1 for block in hidden_unhandled if "YAML mapping order" in block.hidden_by
+        1
+        for block in hidden_unhandled
+        if any(_is_yaml_order_reason(reason) for reason in block.hidden_by)
+        and not _is_yaml_order_continuation(block.hidden_by)
     )
 
     output = [

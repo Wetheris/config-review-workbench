@@ -617,7 +617,7 @@ class Tui:
                 3,
                 2,
                 f"Patterns hidden: {enabled_count} · display filters: "
-                f"whitespace {whitespace_text}, mapping order {mapping_text}",
+                f"whitespace {whitespace_text}, YAML order {mapping_text}",
                 self._color_pair(3),
             )
             self._add(
@@ -1412,9 +1412,9 @@ class Tui:
                 "Off by default. Enable to show indentation/spacing-only blocks in Focused Diff.",
             ),
             (
-                "YAML mapping-order-only changes",
-                "Hides exact scalar entries moved under the same parsed parent mapping. "
-                "Lists, unparseable YAML, and ambiguous moves stay visible.",
+                "YAML order-only changes",
+                "Hides exact scalar mapping moves and unique name-keyed list moves. "
+                "Changed named items become one logical replacement; ambiguous YAML stays visible.",
             ),
             (
                 "Mute non-focused diff content",
@@ -1515,7 +1515,7 @@ class Tui:
             )
             display_state = (
                 f"whitespace {'HIDDEN' if self.workbench.hide_whitespace else 'VISIBLE'} · "
-                f"mapping order {'HIDDEN' if self.workbench.hide_mapping_order else 'VISIBLE'} · "
+                f"YAML order {'HIDDEN' if self.workbench.hide_mapping_order else 'VISIBLE'} · "
                 f"background {'MUTED' if self.workbench.mute_non_focused else 'FULL BRIGHTNESS'}"
             )
             self._add(
@@ -2438,7 +2438,7 @@ class Tui:
         items = [
             ("Comparison paths", "Change the project root or exact DEV/TEST directories"),
             ("Pattern filters", "Review project-wide environment/noise filters"),
-            ("Display filters", "Whitespace, mapping order, and focused contrast"),
+            ("Display filters", "Whitespace, YAML order, and focused contrast"),
             ("Edit project config", "Open .config-review.yaml in the configured editor"),
             ("Rescan", "Refresh the current DEV and TEST directories"),
             ("Back", "Return to the main file list"),
@@ -2529,7 +2529,7 @@ class Tui:
             "",
             "Focused Diff",
             "  Collapses blocks matched by project patterns you explicitly enabled.",
-            "  Press f for Display Filters: whitespace, YAML mapping order, and focused contrast.",
+            "  Press f for Display Filters: whitespace, YAML order, and focused contrast.",
             "  Mapping order only hides exact scalar entries under the same parsed parent mapping.",
             "  YAML lists, templates, invalid YAML, and ambiguous moves remain visible.",
             "  Collapsed blocks remain visible as one filtered marker line.",

@@ -20,8 +20,10 @@ Filter discovery is designed to:
   structural changes.
 - Keep Full Diff completely unfiltered.
 
-The implementation is line-oriented rather than a semantic YAML merge system.
+Pattern discovery is line-oriented rather than a semantic YAML merge system.
 YAML-like scalar parsing is used only to recognize conservative candidate shapes.
+Focused Diff has a separate, narrowly scoped YAML order reconciliation for unique
+`name`-keyed list items; see [Diff Engine and Keyed YAML Lists](diff-engine.md).
 
 ## High-level pipeline
 

@@ -344,8 +344,27 @@ class MappingScalarAnalysis:
 
 
 @dataclass(slots=True)
+class KeyedListItem:
+    """One complete YAML list mapping identified by a unique scalar ``name``."""
+
+    parent: tuple[Any, ...]
+    identity: tuple[str, Any]
+    start: int
+    end: int
+    lines: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class KeyedListAnalysis:
+    """Conservative ``name``-keyed list items plus parser availability state."""
+
+    items: dict[tuple[Any, ...], KeyedListItem]
+    unavailable_reason: str | None = None
+
+
+@dataclass(slots=True)
 class MappingOrderResult:
-    """Mapping-order reconciliation output and any parser availability reason."""
+    """YAML order reconciliation output and any parser availability reason."""
 
     blocks: list[ChangeBlock]
     unavailable_reason: str | None = None
@@ -2074,6 +2093,312 @@ def _mapping_scalar_line_entries(
     return MappingScalarAnalysis(entries=entries)
 
 
+def _yaml_line_indent(line: str) -> int:
+    """Return the number of leading spaces on one YAML source line."""
+    return len(line) - len(line.lstrip(" "))
+
+
+def _last_sequence_item_end(
+    source_lines: Sequence[str],
+    start: int,
+    dash_indent: int,
+) -> int:
+    """Find the conservative end of the last parsed item in one YAML sequence."""
+    for line_index in range(start + 1, len(source_lines)):
+        raw_line = source_lines[line_index]
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        indent = _yaml_line_indent(raw_line)
+        if indent < dash_indent:
+            return line_index
+        if indent == dash_indent and raw_line.lstrip().startswith("-"):
+            return line_index
+    return len(source_lines)
+
+
+def _keyed_list_item_entries(
+    text: str,
+    *,
+    label: str,
+) -> KeyedListAnalysis:
+    """Parse complete mapping list items with a unique scalar ``name`` key.
+
+    This is deliberately narrower than general semantic YAML comparison. A
+    sequence is eligible only when every item is a mapping, every mapping has a
+    scalar ``name``, and those names are unique within that one sequence. The
+    exact source line ranges are retained so a later merge still operates on
+    concrete TEST and DEV text rather than reconstructed YAML.
+    """
+    if YAML is None:
+        return KeyedListAnalysis(items={}, unavailable_reason="ruamel.yaml is not installed")
+
+    yaml = YAML(typ="rt")
+    try:
+        documents = list(yaml.load_all(text))
+    except Exception as exc:
+        mark = getattr(exc, "problem_mark", None)
+        if mark is not None:
+            reason = f"YAML parse failed near line {int(mark.line) + 1}"
+        else:
+            reason = f"YAML parse failed: {type(exc).__name__}"
+        debug("Keyed-list YAML parse unavailable", side=label, reason=reason)
+        return KeyedListAnalysis(items={}, unavailable_reason=reason)
+
+    source_lines = text.splitlines()
+    entries: dict[tuple[Any, ...], KeyedListItem] = {}
+
+    def walk(value: Any, path: tuple[Any, ...]) -> None:
+        if isinstance(value, CommentedMap):
+            for key, child in value.items():
+                walk(child, path + (("key", str(key)),))
+            return
+
+        if not isinstance(value, CommentedSeq):
+            return
+
+        keyed_children: list[tuple[int, CommentedMap, tuple[str, Any], int]] = []
+        eligible = bool(value)
+        seen_identities: set[tuple[str, Any]] = set()
+        for index, child in enumerate(value):
+            if not isinstance(child, CommentedMap) or "name" not in child:
+                eligible = False
+                break
+            identity = _scalar_signature(child.get("name"))
+            if identity is None or identity in seen_identities:
+                eligible = False
+                break
+            try:
+                start_line, _column = value.lc.item(index)
+            except Exception:
+                eligible = False
+                break
+            start = int(start_line)
+            if not (0 <= start < len(source_lines)):
+                eligible = False
+                break
+            raw_line = source_lines[start]
+            if not raw_line.lstrip().startswith("-"):
+                eligible = False
+                break
+            seen_identities.add(identity)
+            keyed_children.append((index, child, identity, start))
+
+        if eligible and keyed_children:
+            starts = [start for _index, _child, _identity, start in keyed_children]
+            if starts != sorted(starts) or len(set(starts)) != len(starts):
+                eligible = False
+
+        if eligible and keyed_children:
+            for position, (_index, child, identity, start) in enumerate(keyed_children):
+                if position + 1 < len(keyed_children):
+                    end = keyed_children[position + 1][3]
+                else:
+                    dash_indent = _yaml_line_indent(source_lines[start])
+                    end = _last_sequence_item_end(source_lines, start, dash_indent)
+                if end <= start:
+                    eligible = False
+                    break
+                entry_key = path + (("name", identity),)
+                entries[entry_key] = KeyedListItem(
+                    parent=path,
+                    identity=identity,
+                    start=start,
+                    end=end,
+                    lines=tuple(source_lines[start:end]),
+                )
+
+        # Preserve stable paths for nested structures. Eligible named items use
+        # their name instead of their positional index; ambiguous sequences keep
+        # the index and are never reconciled as order-insensitive.
+        if eligible and keyed_children:
+            for _index, child, identity, _start in keyed_children:
+                walk(child, path + (("item-name", identity),))
+        else:
+            for index, child in enumerate(value):
+                walk(child, path + (("index", index),))
+
+    for doc_index, document in enumerate(documents):
+        walk(document, (("doc", doc_index),))
+
+    debug(
+        "Keyed-list YAML parse completed",
+        side=label,
+        document_count=len(documents),
+        keyed_item_count=len(entries),
+    )
+    return KeyedListAnalysis(items=entries)
+
+
+def _whole_keyed_items_for_range(
+    items: Mapping[tuple[Any, ...], KeyedListItem],
+    start: int,
+    end: int,
+) -> list[tuple[tuple[Any, ...], KeyedListItem]] | None:
+    """Return complete, contiguous keyed items that exactly cover a diff range."""
+    matches = sorted(
+        (
+            (entry_key, item)
+            for entry_key, item in items.items()
+            if item.start >= start and item.end <= end
+        ),
+        key=lambda pair: pair[1].start,
+    )
+    if not matches or matches[0][1].start != start or matches[-1][1].end != end:
+        return None
+    parent = matches[0][1].parent
+    cursor = start
+    for _entry_key, item in matches:
+        if item.parent != parent or item.start != cursor:
+            return None
+        cursor = item.end
+    return matches if cursor == end else None
+
+
+def _is_yaml_order_reason(reason: str) -> bool:
+    return reason.startswith(("YAML mapping order", "YAML keyed-list order"))
+
+
+def _is_yaml_order_continuation(hidden_by: Sequence[str]) -> bool:
+    return len(hidden_by) == 1 and hidden_by[0].endswith("order continuation")
+
+
+def _reconcile_keyed_list_blocks(
+    blocks: Sequence[ChangeBlock],
+    old_lines: Sequence[str],
+    new_lines: Sequence[str],
+    test_text: str,
+    dev_text: str,
+    *,
+    relative_path: str,
+) -> MappingOrderResult:
+    """Collapse moved ``name``-keyed YAML items into safe logical replacements.
+
+    Only a pure TEST deletion and pure DEV insertion are paired, and only when
+    both ranges consist entirely of the same unique named items under the same
+    parsed sequence. Unchanged moved items become order-only noise. Changed
+    moved items remain visible as one concrete replacement using their real
+    TEST and DEV line ranges. Anything partial, duplicated, templated, or
+    ambiguous falls back to the original text diff unchanged.
+    """
+    test_analysis = _keyed_list_item_entries(test_text, label=f"TEST:{relative_path}")
+    dev_analysis = _keyed_list_item_entries(dev_text, label=f"DEV:{relative_path}")
+    reasons = [
+        reason
+        for reason in (test_analysis.unavailable_reason, dev_analysis.unavailable_reason)
+        if reason
+    ]
+    if reasons:
+        return MappingOrderResult(
+            blocks=list(blocks),
+            unavailable_reason="; ".join(dict.fromkeys(reasons)),
+        )
+
+    delete_candidates: dict[
+        tuple[tuple[Any, ...], frozenset[tuple[Any, ...]]],
+        list[tuple[int, list[tuple[tuple[Any, ...], KeyedListItem]]]],
+    ] = defaultdict(list)
+    insert_candidates: dict[
+        tuple[tuple[Any, ...], frozenset[tuple[Any, ...]]],
+        list[tuple[int, list[tuple[tuple[Any, ...], KeyedListItem]]]],
+    ] = defaultdict(list)
+
+    for block_index, block in enumerate(blocks):
+        if block.old_count and block.new_count == 0:
+            items = _whole_keyed_items_for_range(
+                test_analysis.items, block.old_start, block.old_end
+            )
+            if items:
+                key = (items[0][1].parent, frozenset(entry_key for entry_key, _item in items))
+                delete_candidates[key].append((block_index, items))
+        elif block.new_count and block.old_count == 0:
+            items = _whole_keyed_items_for_range(dev_analysis.items, block.new_start, block.new_end)
+            if items:
+                key = (items[0][1].parent, frozenset(entry_key for entry_key, _item in items))
+                insert_candidates[key].append((block_index, items))
+
+    output = list(blocks)
+    used_blocks: set[int] = set()
+    reconciled = 0
+    for key, delete_matches in delete_candidates.items():
+        insert_matches = insert_candidates.get(key, [])
+        if len(delete_matches) != 1 or len(insert_matches) != 1:
+            continue
+        delete_index, old_items = delete_matches[0]
+        insert_index, new_items = insert_matches[0]
+        if delete_index in used_blocks or insert_index in used_blocks:
+            continue
+
+        old_by_key = dict(old_items)
+        new_by_key = dict(new_items)
+        changed_keys = [
+            entry_key
+            for entry_key, _item in old_items
+            if old_by_key[entry_key].lines != new_by_key[entry_key].lines
+        ]
+
+        delete_source = output[delete_index]
+        insert_source = output[insert_index]
+        if changed_keys:
+            changed_old = [old_by_key[entry_key] for entry_key in changed_keys]
+            changed_new = [new_by_key[entry_key] for entry_key in changed_keys]
+            old_start = min(item.start for item in changed_old)
+            old_end = max(item.end for item in changed_old)
+            new_start = min(item.start for item in changed_new)
+            new_end = max(item.end for item in changed_new)
+            hidden_by: tuple[str, ...] = ()
+        else:
+            old_start = delete_source.old_start
+            old_end = delete_source.old_end
+            new_start = insert_source.new_start
+            new_end = insert_source.new_end
+            hidden_by = ("YAML keyed-list order",)
+
+        # Anchor the logical replacement at the TEST deletion opcode. This keeps
+        # merge actions tied to the concrete TEST range while the DEV insertion
+        # opcode becomes a silent continuation for Focused Diff rendering.
+        output[delete_index] = _logical_block(
+            source=delete_source,
+            tag="replace",
+            old_start=old_start,
+            old_end=old_end,
+            new_start=new_start,
+            new_end=new_end,
+            old_lines=old_lines[old_start:old_end],
+            new_lines=new_lines[new_start:new_end],
+            hidden_by=hidden_by,
+        )
+        output[insert_index] = _logical_block(
+            source=insert_source,
+            tag=insert_source.tag,
+            old_start=insert_source.old_start,
+            old_end=insert_source.old_start,
+            new_start=insert_source.new_start,
+            new_end=insert_source.new_start,
+            old_lines=[],
+            new_lines=[],
+            hidden_by=("YAML keyed-list order continuation",),
+        )
+        used_blocks.update({delete_index, insert_index})
+        reconciled += 1
+        debug(
+            "Keyed-list move reconciled",
+            file=relative_path,
+            parent=key[0],
+            named_item_count=len(old_items),
+            changed_item_count=len(changed_keys),
+            test_range=(old_start + 1, old_end),
+            dev_range=(new_start + 1, new_end),
+        )
+
+    debug(
+        "Keyed-list reconciliation completed",
+        file=relative_path,
+        reconciled_pair_count=reconciled,
+    )
+    return MappingOrderResult(blocks=output)
+
+
 def _logical_block(
     *,
     source: ChangeBlock,
@@ -2422,7 +2747,7 @@ def compute_filter_result(
 
     mapping_order_unavailable_reason: str | None = None
     if hide_mapping_order:
-        reconciliation = _reconcile_mapping_order_blocks(
+        keyed_reconciliation = _reconcile_keyed_list_blocks(
             blocks,
             old_lines,
             new_lines,
@@ -2430,12 +2755,30 @@ def compute_filter_result(
             dev_text,
             relative_path=relative_path,
         )
-        blocks = reconciliation.blocks
-        mapping_order_unavailable_reason = reconciliation.unavailable_reason
+        blocks = keyed_reconciliation.blocks
+        mapping_reconciliation = _reconcile_mapping_order_blocks(
+            blocks,
+            old_lines,
+            new_lines,
+            test_text,
+            dev_text,
+            relative_path=relative_path,
+        )
+        blocks = mapping_reconciliation.blocks
+        reasons = [
+            reason
+            for reason in (
+                keyed_reconciliation.unavailable_reason,
+                mapping_reconciliation.unavailable_reason,
+            )
+            if reason
+        ]
+        if reasons:
+            mapping_order_unavailable_reason = "; ".join(dict.fromkeys(reasons))
 
     classified: list[ChangeBlock] = []
     for block_index, block in enumerate(blocks):
-        if any(reason.startswith("YAML mapping order") for reason in block.hidden_by):
+        if any(_is_yaml_order_reason(reason) for reason in block.hidden_by):
             classified.append(block)
             debug(
                 "Change block classified",

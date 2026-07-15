@@ -181,7 +181,7 @@ them again from Pattern filters. Display settings remain project-configured.
 |---|---|
 | Comparison paths | Change the project root or set exact DEV and TEST directories |
 | Pattern filters | Review and toggle project-wide noise filters |
-| Display filters | Control whitespace, YAML mapping-order, and focused contrast presentation |
+| Display filters | Control whitespace, safe YAML order handling, and focused contrast presentation |
 | Edit project config | Open `.config-review.yaml` in the configured editor |
 | Rescan | Refresh the current DEV and TEST directory trees |
 
@@ -258,7 +258,9 @@ Enabled project patterns are saved in `.config-review.yaml` and apply across the
 whole project on later runs.
 
 For the exact candidate-generation rules and safeguards, see
-[Filter Discovery Logic](docs/filter-discovery.md).
+[Filter Discovery Logic](docs/filter-discovery.md). For text alignment, keyed YAML
+list handling, fallbacks, and merge safety, see
+[Diff Engine and Keyed YAML Lists](docs/diff-engine.md).
 
 ### Always-reviewed changes
 
@@ -278,7 +280,8 @@ differences are filtered.
 Display Filters are separate from project patterns:
 
 - Show or hide whitespace-only changes
-- Hide safe YAML mapping-order-only changes
+- Hide safe YAML order-only changes, including exact mapping moves and unique
+  `name`-keyed list moves
 - Mute non-focused diff content
 
 Display Filters change how Focused Diff is presented. Full Diff remains completely
@@ -406,7 +409,9 @@ archive.
 - The curses TUI is intended primarily for Linux, macOS, WSL, and SSH terminals.
 - The tool compares configuration as text and does not determine whether a change is
   operationally correct or safe to deploy.
-- Mapping-order filtering requires YAML that can be parsed unambiguously.
+- YAML order filtering requires unambiguous parseable YAML. Duplicate named list
+  items, templates that do not parse, and partial or mixed list structures fall back
+  to the literal text diff.
 - Current-run undo does not persist after the application exits.
 
 ## Release model

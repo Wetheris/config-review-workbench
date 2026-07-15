@@ -467,7 +467,8 @@ class Workbench:
             return False, str(exc)
         state = "hidden" if self.hide_mapping_order else "shown"
         return True, (
-            f"YAML mapping-order-only scalar changes are now {state} in Focused Diff. "
+            f"Safe YAML order-only changes are now {state} in Focused Diff. "
+            "This includes scalar mapping moves and unique name-keyed list moves. "
             "Full Diff is unchanged."
         )
 

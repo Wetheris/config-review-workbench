@@ -270,6 +270,48 @@ def run_regression_tests() -> int:
                 test_duplicate_identity_ranges_do_not_overlap,
             )
 
+            def test_named_list_move_is_one_logical_change() -> None:
+                old = (
+                    "env:\n"
+                    "  - name: SPRING_APPLICATION_NAME\n"
+                    "    value: app\n"
+                    "  - name: SPRING_PROFILES_ACTIVE\n"
+                    "    value: prod\n"
+                    "  - name: SPRING_CONFIG_ADDITIONAL_LOCATION\n"
+                    "    value: file:/app/config/application-extra.yml\n"
+                )
+                new = (
+                    "env:\n"
+                    "  - name: SPRING_PROFILES_ACTIVE\n"
+                    "    value: prod,seed\n"
+                    "  - name: SPRING_CONFIG_ADDITIONAL_LOCATION\n"
+                    "    value: file:/app/config/application-extra.yml\n"
+                    "  - name: SPRING_APPLICATION_NAME\n"
+                    "    value: app\n"
+                )
+                result = compute_filter_result(
+                    old,
+                    new,
+                    [],
+                    "named-list.yaml",
+                    hide_mapping_order=True,
+                )
+                assert len(result.visible) == 1
+                block = result.visible[0]
+                assert block.old_lines == [
+                    "  - name: SPRING_PROFILES_ACTIVE",
+                    "    value: prod",
+                ]
+                assert block.new_lines == [
+                    "  - name: SPRING_PROFILES_ACTIVE",
+                    "    value: prod,seed",
+                ]
+
+            check(
+                "moved unique name-keyed YAML items become one logical value change",
+                test_named_list_move_is_one_logical_change,
+            )
+
     except (AssertionError, OSError, WorkbenchError) as exc:
         print(f"FAIL  {exc}", file=sys.stderr)
         print(f"{len(passed)} targeted regression test(s) passed before failure.", file=sys.stderr)
