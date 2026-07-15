@@ -423,6 +423,9 @@ def plain_filters(workbench: Workbench) -> None:
 
 
 def plain_report_options(workbench: Workbench, record: FileRecord, *, mode: str) -> None:
+    if workbench.report_change_count(record, mode) == 0:
+        print("No visible differences are available in the current view; report was not generated.")
+        return
     include_context_labels = True
     include_git_context = True
     while True:
@@ -452,15 +455,17 @@ def plain_report_options(workbench: Workbench, record: FileRecord, *, mode: str)
             include_git_context = not include_git_context
             continue
         if choice == "p":
-            print(
-                "\n"
-                + workbench.generate_file_report(
+            try:
+                report = workbench.generate_file_report(
                     record,
                     mode=mode,
                     include_context_labels=include_context_labels,
                     include_git_context=include_git_context,
                 )
-            )
+            except WorkbenchError as exc:
+                print(exc)
+                return
+            print("\n" + report)
             continue
         if choice in {"o", "s"}:
             try:
@@ -503,7 +508,11 @@ def plain_file_actions(workbench: Workbench, record: FileRecord, *, mode: str) -
         print("\nFILE ACTIONS")
         print(f"[m] {completion_label}")
         print("[u] Undo this run's file changes")
-        print("[r] Visible-diff report")
+        report_count = workbench.report_change_count(record, mode)
+        if report_count:
+            print(f"[r] Visible-diff report ({report_count})")
+        else:
+            print("[r] No visible differences to report")
         print(f"[c] {copy_label}")
         print("[b] Back")
         try:
@@ -548,6 +557,12 @@ def plain_file_actions(workbench: Workbench, record: FileRecord, *, mode: str) -
             print(message)
             return changed
         if choice == "r":
+            if report_count == 0:
+                print(
+                    "No visible differences are available in the current view; "
+                    "report was not generated."
+                )
+                continue
             plain_report_options(workbench, record, mode=mode)
             continue
         if choice != "c":
@@ -619,7 +634,7 @@ def plain_review_actions(
         )
         print("Resolve: [a]ccept DEV  [s]keep TEST")
         print("Edit: [l]pull DEV + edit  [e]dit TEST  [v]vimdiff")
-        print("Navigate: [n/p] previous/next diff  [ / ] Previous/next file  [b]ack  [q]uit")
+        print("Navigate: [j/k] next/previous diff  [ / ] Previous/next file  [b]ack  [q]uit")
         try:
             choice = input("Action: ").strip()[:1]
         except (EOFError, KeyboardInterrupt):
@@ -731,7 +746,7 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
             print(
                 color(
                     f"ACTIVE CHANGE {selected_change + 1}/{presentation.visible_change_count}; "
-                    "use n/p to step through active differences.",
+                    "use j/k to step through active differences.",
                     "yellow",
                 )
             )
@@ -757,11 +772,11 @@ def plain_detail(workbench: Workbench, record: FileRecord) -> str:
         if mode == "focused":
             hidden_action = "[h]collapse hidden" if expand_filtered else "[h]expand hidden"
             print(
-                f"[n/p] previous/next diff  [Enter]review  [d]full diff  "
+                f"[j/k] next/previous diff  [Enter]review  [d]full diff  "
                 f"{hidden_action}  [f]filters"
             )
         else:
-            print("[n/p] previous/next diff  [Enter]review  [d]focused diff  [f]filters")
+            print("[j/k] next/previous diff  [Enter]review  [d]focused diff  [f]filters")
         print("[a]file actions  [ / ] Previous/next file  [b]back  [q]quit")
         try:
             raw_choice = input("Action: ").strip().lower()

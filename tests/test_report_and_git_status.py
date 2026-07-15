@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import curses
 import subprocess
+
+import pytest
 from pathlib import Path
 
-from config_review.core import AppSettings, git_repository_status
-from config_review.tui import detail_footer_lines
+from config_review.core import AppSettings, WorkbenchError, git_repository_status
+from config_review.tui import Tui, detail_footer_lines
 from config_review.workbench import Workbench
 
 
@@ -39,7 +42,7 @@ def test_detail_footer_is_responsive_and_uses_clear_navigation_labels():
         assert len(lines) >= 2
         assert all(len(line) <= width for line in lines)
         combined = " ".join(lines)
-        assert "n/p" in combined
+        assert "j/k" in combined
         assert "file" in combined.lower()
         assert "filters" in combined
         assert "actions" in combined
@@ -168,3 +171,102 @@ def test_git_status_fetch_detects_branch_behind_remote(tmp_path: Path):
     assert status.behind == 1
     assert status.ahead == 0
     assert "1 behind origin/main" in status.summary
+
+
+def test_blank_focused_report_is_not_generated(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.yaml").write_text("key: value\n", encoding="utf-8")
+    (target / "values.yaml").write_text("key: value  \n", encoding="utf-8")
+
+    workbench = Workbench(_settings(root))
+    record = workbench.records[0]
+
+    assert workbench.report_change_count(record, "focused") == 0
+    with pytest.raises(WorkbenchError, match="No visible differences"):
+        workbench.generate_file_report(record, mode="focused")
+    with pytest.raises(WorkbenchError, match="No visible differences"):
+        workbench.save_file_report(record, mode="focused")
+    assert not (root / ".config-review-reports").exists()
+
+
+class _FakeScreen:
+    def __init__(self, keys: list[int], *, height: int = 24, width: int = 120) -> None:
+        self.keys = iter(keys)
+        self.height = height
+        self.width = width
+
+    def erase(self) -> None:
+        pass
+
+    def refresh(self) -> None:
+        pass
+
+    def getmaxyx(self) -> tuple[int, int]:
+        return self.height, self.width
+
+    def getch(self) -> int:
+        return next(self.keys)
+
+    def addnstr(self, *_args) -> None:
+        pass
+
+
+def test_detail_scrolling_reuses_cached_file_and_presentation(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.yaml").write_text(
+        "settings:\n" + "".join(f"  key_{index}: dev-{index}\n" for index in range(40)),
+        encoding="utf-8",
+    )
+    (target / "values.yaml").write_text(
+        "settings:\n" + "".join(f"  key_{index}: test-{index}\n" for index in range(40)),
+        encoding="utf-8",
+    )
+
+    workbench = Workbench(_settings(root))
+    refresh_calls = 0
+    original_refresh = workbench.refresh_record
+
+    def counted_refresh(record):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return original_refresh(record)
+
+    monkeypatch.setattr(workbench, "refresh_record", counted_refresh)
+
+    import config_review.tui as tui_module
+
+    render_calls = 0
+    original_render = tui_module.review_unified_diff
+
+    def counted_render(*args, **kwargs):
+        nonlocal render_calls
+        render_calls += 1
+        return original_render(*args, **kwargs)
+
+    layout_calls = 0
+    original_layout = tui_module.maximum_horizontal_offset
+
+    def counted_layout(*args, **kwargs):
+        nonlocal layout_calls
+        layout_calls += 1
+        return original_layout(*args, **kwargs)
+
+    monkeypatch.setattr(tui_module, "review_unified_diff", counted_render)
+    monkeypatch.setattr(tui_module, "maximum_horizontal_offset", counted_layout)
+
+    tui = Tui(workbench)
+    monkeypatch.setattr(tui, "_color_pair", lambda _number: 0)
+    screen = _FakeScreen([curses.KEY_DOWN, curses.KEY_RIGHT, ord("b")])
+
+    assert tui.detail_screen(screen, 0) == "back"
+    assert refresh_calls == 1
+    assert render_calls == 1
+    assert layout_calls == 1

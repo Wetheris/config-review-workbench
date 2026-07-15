@@ -197,7 +197,7 @@ kept out of the footer so the quick-review view stays readable.
 
 | Key | Action |
 |---|---|
-| `n` / `p` | Next or previous active difference |
+| `j` / `k` | Next or previous active difference |
 | `↑` / `↓`, `Page Up` / `Page Down` | Navigate vertically through the file |
 | `←` / `→` | Navigate horizontally |
 | `[` / `]` | Previous or next file |
@@ -209,6 +209,11 @@ kept out of the footer so the quick-review view stays readable.
 | `?` | Help |
 | `b` | Back |
 | `q` | Quit |
+
+Vertical and horizontal scrolling reuse the current rendered diff. The workbench rereads
+files and rebuilds the presentation only after a file/view/filter/action change or an
+explicit rescan, so arrow-key and terminal mouse-wheel scrolling stay responsive on
+larger files.
 
 ### File Actions and visible-diff reports
 
@@ -229,7 +234,8 @@ The **Visible-diff report** is intentionally scoped to the current view:
 
 Reports can be opened in the configured editor, saved as Markdown under
 `.config-review-reports/`, or printed to the terminal. The report directory is ignored
-by Git.
+by Git. When the current view has no selectable differences, report actions are disabled
+and no empty report file or directory is created.
 
 ### Git freshness check
 

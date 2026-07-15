@@ -19,7 +19,8 @@ silently added to a Focused Diff report.
 
 Reports are Markdown files saved under `.config-review-reports/`. That directory is
 ignored by Git. The same report can be opened in the configured editor or printed to
-the terminal.
+the terminal. If the current view has zero selectable differences, the report menu is
+blocked and no empty report or report directory is created.
 
 ## Context labels
 

@@ -216,29 +216,29 @@ def detail_footer_lines(
     hidden = "collapse hidden" if expand_filtered else "expand hidden"
     if available_width >= 110:
         return (
-            "Navigate: [Arrows/PgUp/PgDn] scroll  [n/p] previous/next diff  "
+            "Navigate: [Arrows/PgUp/PgDn] scroll  [j/k] next/previous diff  "
             "[ / ] Previous/next file",
             f"View: [d]{view}  [h]{hidden}  [f]filters  [Enter]review  "
             "[a]file actions  [?]help  [b]back  [q]quit",
         )
     if available_width >= 80:
         return (
-            "[n/p] previous/next diff  [ / ] Previous/next file  [Arrows] navigate",
+            "[j/k] next/previous diff  [ / ] Previous/next file  [Arrows] navigate",
             f"[Enter]review  [a]file actions  [f]filters  [d]{view}  [?]help  [q]quit",
         )
     if available_width >= 60:
         return (
-            "[n/p] diff  [ / ] file  [Arrows/PgUp/PgDn] navigate",
+            "[j/k] diff  [ / ] file  [Arrows/PgUp/PgDn] navigate",
             "[Enter]open [a]actions [f]filters [d]view [?]help [q]quit",
         )
     if available_width >= 42:
         return (
-            "[n/p]diff [ / ]file [Arrows]nav",
+            "[j/k]diff [ / ]file [Arrows]nav",
             "[Ret]open [a]actions [f]filters",
             "[d]view [?]help [b]back [q]quit",
         )
     return (
-        "[n/p]diff [ / ]file",
+        "[j/k]diff [ / ]file",
         "[Ret]open [a]actions",
         "[f]filters [d]view",
         "[?]help [b]back [q]quit",
@@ -1104,54 +1104,76 @@ class Tui:
         jump_to_selected = True
         open_review_once = open_review
         self.selected = selected
+        # File reads, YAML reconciliation, and diff rendering are intentionally cached.
+        # Arrow keys and terminal mouse-wheel sequences should only move the viewport.
+        presentation = None
+        current_record_path: str | None = None
+        refresh_record_needed = True
+        rebuild_presentation = True
+        mode_label = ""
+        mode_note = ""
+        mapping_note = ""
+        layout_width: int | None = None
+        selected_body_range: tuple[int, int] | None = None
+        max_horizontal = 0
         while self.workbench.records:
             self.selected = max(0, min(self.selected, len(self.workbench.records) - 1))
             record = self.workbench.records[self.selected]
-            self.workbench.refresh_record(record)
+            if current_record_path != record.relative_path:
+                current_record_path = record.relative_path
+                refresh_record_needed = True
 
-            if mode == "focused":
-                presentation = review_unified_diff(
-                    record,
-                    self.workbench.enabled_patterns,
-                    self.workbench.settings.context,
-                    hide_whitespace=self.workbench.hide_whitespace,
-                    hide_mapping_order=self.workbench.hide_mapping_order,
-                    expand_filtered=expand_filtered,
-                    selected_change=selected_change,
-                )
-                selected_change = presentation.selected_change or 0
-                pattern_hidden = presentation.pattern_hidden_count
-                whitespace_hidden = presentation.whitespace_hidden_count
-                mapping_hidden = presentation.mapping_order_hidden_count
-                mapping_state = mapping_order_status_text(
-                    enabled=self.workbench.hide_mapping_order,
-                    hidden_count=mapping_hidden,
-                    unavailable_reason=presentation.mapping_order_unavailable_reason,
-                )
-                mode_label = "FOCUSED DIFF"
-                hidden_state = "expanded" if expand_filtered else "collapsed"
-                mode_note = (
-                    f"{presentation.visible_change_count} active · "
-                    f"{presentation.handled_count} handled · "
-                    f"{pattern_hidden} noise-hidden · {whitespace_hidden} whitespace-hidden · "
-                    f"{hidden_state}."
-                )
-                mapping_note = mapping_state
-            else:
-                presentation = full_unified_diff(
-                    record,
-                    self.workbench.settings.context,
-                    selected_change=selected_change,
-                )
-                selected_change = presentation.selected_change or 0
-                mode_label = "FULL DIFF"
-                mode_note = (
-                    f"{presentation.visible_change_count} active · "
-                    f"{presentation.handled_count} handled · "
-                    "actual TEST/DEV text is shown."
-                )
-                mapping_note = "Display filters are disabled in Full Diff."
+            if refresh_record_needed:
+                self.workbench.refresh_record(record)
+                refresh_record_needed = False
+                rebuild_presentation = True
 
+            if rebuild_presentation or presentation is None:
+                if mode == "focused":
+                    presentation = review_unified_diff(
+                        record,
+                        self.workbench.enabled_patterns,
+                        self.workbench.settings.context,
+                        hide_whitespace=self.workbench.hide_whitespace,
+                        hide_mapping_order=self.workbench.hide_mapping_order,
+                        expand_filtered=expand_filtered,
+                        selected_change=selected_change,
+                    )
+                    selected_change = presentation.selected_change or 0
+                    pattern_hidden = presentation.pattern_hidden_count
+                    whitespace_hidden = presentation.whitespace_hidden_count
+                    mapping_hidden = presentation.mapping_order_hidden_count
+                    mapping_state = mapping_order_status_text(
+                        enabled=self.workbench.hide_mapping_order,
+                        hidden_count=mapping_hidden,
+                        unavailable_reason=presentation.mapping_order_unavailable_reason,
+                    )
+                    mode_label = "FOCUSED DIFF"
+                    hidden_state = "expanded" if expand_filtered else "collapsed"
+                    mode_note = (
+                        f"{presentation.visible_change_count} active · "
+                        f"{presentation.handled_count} handled · "
+                        f"{pattern_hidden} noise-hidden · {whitespace_hidden} whitespace-hidden · "
+                        f"{hidden_state}."
+                    )
+                    mapping_note = mapping_state
+                else:
+                    presentation = full_unified_diff(
+                        record,
+                        self.workbench.settings.context,
+                        selected_change=selected_change,
+                    )
+                    selected_change = presentation.selected_change or 0
+                    mode_label = "FULL DIFF"
+                    mode_note = (
+                        f"{presentation.visible_change_count} active · "
+                        f"{presentation.handled_count} handled · "
+                        "actual TEST/DEV text is shown."
+                    )
+                    mapping_note = "Display filters are disabled in Full Diff."
+
+                rebuild_presentation = False
+                layout_width = None
             selected_block = presentation.selected_block
             if open_review_once:
                 open_review_once = False
@@ -1175,16 +1197,18 @@ class Tui:
                         selected_change = 0
                         scroll = horizontal = 0
                         jump_to_selected = True
+                        refresh_record_needed = True
                         continue
                     selected_change = result.selected_change
                     scroll = horizontal = 0
                     jump_to_selected = True
+                    refresh_record_needed = True
                     continue
 
             if presentation.visible_change_count and selected_block is not None:
                 progress_note = (
                     f"ACTIVE CHANGE {selected_change + 1}/{presentation.visible_change_count} · "
-                    "[n] next · [p] previous"
+                    "[j] next · [k] previous"
                 )
             elif mode == "focused":
                 if presentation.handled_count:
@@ -1217,14 +1241,16 @@ class Tui:
             body_top = 7
             body_height = max(1, height - body_top - len(footer_lines) - 1)
             max_scroll = max(0, len(content) - body_height)
-            selected_body_range = selected_diff_body_range(presentation)
-            max_horizontal = maximum_horizontal_offset(
-                content,
-                presentation.number_width,
-                width,
-                x=1,
-                selected_body_range=selected_body_range,
-            )
+            if layout_width != width:
+                selected_body_range = selected_diff_body_range(presentation)
+                max_horizontal = maximum_horizontal_offset(
+                    content,
+                    presentation.number_width,
+                    width,
+                    x=1,
+                    selected_body_range=selected_body_range,
+                )
+                layout_width = width
             horizontal = max(0, min(horizontal, max_horizontal))
             if jump_to_selected and presentation.selected_line_index is not None:
                 scroll = max(0, presentation.selected_line_index - max(1, body_height // 3))
@@ -1320,10 +1346,12 @@ class Tui:
                 scroll = horizontal = 0
                 selected_change = 0
                 jump_to_selected = True
+                rebuild_presentation = True
             elif key in (ord("h"), ord("H")) and mode == "focused":
                 expand_filtered = not expand_filtered
                 scroll = horizontal = 0
                 jump_to_selected = True
+                rebuild_presentation = True
                 self.status = (
                     "Hidden blocks expanded inline."
                     if expand_filtered
@@ -1334,12 +1362,14 @@ class Tui:
                 scroll = horizontal = 0
                 selected_change = 0
                 jump_to_selected = True
+                rebuild_presentation = True
             elif key in (ord("g"), ord("G")):
                 # Backward-compatible shortcut for the former Patterns command.
                 self.pattern_manager_screen(stdscr)
                 scroll = horizontal = 0
                 selected_change = 0
                 jump_to_selected = True
+                rebuild_presentation = True
             elif key in (10, 13, curses.KEY_ENTER):
                 if selected_block is None:
                     self.status = "No selected change is available for actions."
@@ -1359,8 +1389,11 @@ class Tui:
                         selected_change = 0
                         scroll = horizontal = 0
                         jump_to_selected = True
+                        refresh_record_needed = True
                         continue
                     selected_change = result.selected_change
+                    refresh_record_needed = True
+                    rebuild_presentation = True
                     if result.changed:
                         scroll = horizontal = 0
                         jump_to_selected = True
@@ -1375,6 +1408,7 @@ class Tui:
                     self.status = (
                         "No active diffs remain; this file is already automatically complete."
                     )
+                rebuild_presentation = True
             elif key in (ord("u"), ord("U")):
                 if not self.confirm(
                     stdscr,
@@ -1392,10 +1426,12 @@ class Tui:
                     selected_change = 0
                     scroll = horizontal = 0
                     jump_to_selected = True
+                    refresh_record_needed = True
             elif key in (ord("a"), ord("A"), ord("x"), ord("X")):
                 file_result = self.file_actions_menu(stdscr, record, mode=mode)
                 if file_result == "quit":
                     return "quit"
+                refresh_record_needed = True
                 if file_result == "changed":
                     scroll = horizontal = 0
                     selected_change = 0
@@ -1405,6 +1441,7 @@ class Tui:
                 if count:
                     selected_change = (selected_change + 1) % count
                     jump_to_selected = True
+                    rebuild_presentation = True
                 else:
                     self.status = "No changes to step through in this view."
             elif key in (ord("p"), ord("P"), ord("k"), ord("K")):
@@ -1412,6 +1449,7 @@ class Tui:
                 if count:
                     selected_change = (selected_change - 1) % count
                     jump_to_selected = True
+                    rebuild_presentation = True
                 else:
                     self.status = "No changes to step through in this view."
             elif key == curses.KEY_UP:
@@ -1431,11 +1469,13 @@ class Tui:
                 selected_change = 0
                 scroll = horizontal = 0
                 jump_to_selected = True
+                refresh_record_needed = True
             elif key == ord("["):
                 self.selected = (self.selected - 1) % len(self.workbench.records)
                 selected_change = 0
                 scroll = horizontal = 0
                 jump_to_selected = True
+                refresh_record_needed = True
             elif key == ord("?"):
                 self.help_screen(stdscr)
 
@@ -2101,7 +2141,7 @@ class Tui:
                 stdscr,
                 height - 2,
                 1,
-                "Navigate: [n/p] previous/next diff  [ / ] Previous/next file  "
+                "Navigate: [j/k] next/previous diff  [ / ] Previous/next file  "
                 "[Arrows/PgUp/PgDn] navigate  [b]ack  [q]uit",
             )
             self._add(stdscr, height - 1, 1, self.status, self._color_pair(3))
@@ -2248,12 +2288,16 @@ class Tui:
         include_context_labels: bool,
         include_git_context: bool,
     ) -> None:
-        report = self.workbench.generate_file_report(
-            record,
-            mode=mode,
-            include_context_labels=include_context_labels,
-            include_git_context=include_git_context,
-        )
+        try:
+            report = self.workbench.generate_file_report(
+                record,
+                mode=mode,
+                include_context_labels=include_context_labels,
+                include_git_context=include_git_context,
+            )
+        except WorkbenchError as exc:
+            self.status = str(exc)
+            return
         curses.def_prog_mode()
         curses.endwin()
         try:
@@ -2267,6 +2311,12 @@ class Tui:
             stdscr.refresh()
 
     def report_options_screen(self, stdscr: Any, record: FileRecord, *, mode: str) -> None:
+        if self.workbench.report_change_count(record, mode) == 0:
+            self.status = (
+                "No visible differences are available in the current view; "
+                "report was not generated."
+            )
+            return
         include_context_labels = True
         include_git_context = True
         selected = 0
@@ -2403,6 +2453,16 @@ class Tui:
                 completion_label = "File is already complete"
                 completion_description = "No active differences remain to mark complete."
 
+            report_count = self.workbench.report_change_count(record, mode)
+            if report_count:
+                report_label = f"Visible-diff report ({report_count})"
+                report_description = "Report only the current file's selectable differences from the current diff view."
+            else:
+                report_label = "No visible differences to report"
+                report_description = (
+                    "Change the current view or filters before generating a report."
+                )
+
             if record.test_symlink_path:
                 copy_label = "Write disabled: TEST path contains a symlink"
             else:
@@ -2423,8 +2483,8 @@ class Tui:
                 (
                     "REPORT",
                     "report",
-                    "Visible-diff report",
-                    "Report only the current file's selectable differences from the current diff view.",
+                    report_label,
+                    report_description,
                 ),
                 (
                     "WHOLE FILE",
@@ -2500,6 +2560,12 @@ class Tui:
                 if changed:
                     return "changed"
             elif kind == "report":
+                if report_count == 0:
+                    self.status = (
+                        "No visible differences are available in the current view; "
+                        "report was not generated."
+                    )
+                    continue
                 self.report_options_screen(stdscr, record, mode=mode)
             elif kind == "copy":
                 if record.test_symlink_path:
@@ -2937,7 +3003,7 @@ class Tui:
             "  Press h to expand/collapse hidden blocks and d to switch diff views.",
             "",
             "Navigation",
-            "  n/p moves to the next/previous active difference.",
+            "  j/k moves to the next/previous active difference.",
             "  [ moves to the previous file and ] moves to the next file.",
             "  Arrow keys and Page Up/Page Down navigate the current view.",
             "  Enter opens the selected-difference action panel.",

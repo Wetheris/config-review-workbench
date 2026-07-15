@@ -662,6 +662,10 @@ class Workbench:
             selected_change=0,
         )
 
+    def report_change_count(self, record: FileRecord, mode: str = "focused") -> int:
+        """Return the number of selectable changes a current-file report would contain."""
+        return self._report_presentation(record, mode).visible_change_count
+
     def _block_git_context(
         self,
         record: FileRecord,
@@ -703,6 +707,11 @@ class Workbench:
         """Generate Markdown for the current file's selectable differences."""
         presentation = self._report_presentation(record, mode)
         blocks = list(presentation.change_blocks)
+        if not blocks:
+            raise WorkbenchError(
+                "No visible differences are available in the current view; "
+                "report was not generated."
+            )
         view_name = "Full Diff" if mode == "full" else "Focused Diff"
         generated = datetime.now().astimezone().isoformat(timespec="seconds")
         git_note = self.git_status.summary
@@ -725,10 +734,6 @@ class Workbench:
         else:
             lines.append("- **Scope:** Full literal text differences are included.")
         lines.append("")
-
-        if not blocks:
-            lines.extend(["No visible differences are available in this view.", ""])
-            return "\n".join(lines)
 
         for index, block in enumerate(blocks, start=1):
             label = (
@@ -762,20 +767,18 @@ class Workbench:
         include_git_context: bool = True,
     ) -> Path:
         """Write a local ignored Markdown report and return its path."""
+        report = self.generate_file_report(
+            record,
+            mode=mode,
+            include_context_labels=include_context_labels,
+            include_git_context=include_git_context,
+        )
         report_dir = self.settings.config_file.parent / ".config-review-reports"
         report_dir.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", record.relative_path).strip("-")
         timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
         path = report_dir / f"{slug or 'config'}-{mode}-{timestamp}.md"
-        atomic_write_text(
-            path,
-            self.generate_file_report(
-                record,
-                mode=mode,
-                include_context_labels=include_context_labels,
-                include_git_context=include_git_context,
-            ),
-        )
+        atomic_write_text(path, report)
         return path
 
     def _reconcile_changed_record(self, record: FileRecord) -> None:
