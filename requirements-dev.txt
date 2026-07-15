@@ -3,6 +3,6 @@
 ruamel.yaml>=0.18
 ruff>=0.9
 pytest>=8
-bandit[toml]>=1.8
+bandit[toml]>=1.9.4
 pip-audit>=2.7
 pre-commit>=4
