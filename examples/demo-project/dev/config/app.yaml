@@ -1,0 +1,14 @@
+replicaCount: 3
+
+image:
+  repository: example/service-api
+  tag: "1.5.0"
+
+service:
+  host: api.dev.example.internal
+  logLevel: DEBUG
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
