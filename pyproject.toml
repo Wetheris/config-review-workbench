@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "config-review-workbench"
+version = "1.0.0"
+description = "Interactive source-to-target configuration review workbench"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["ruamel.yaml>=0.17"]
+
+[project.scripts]
+config-review = "config_review.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
