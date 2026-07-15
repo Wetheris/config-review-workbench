@@ -17,10 +17,29 @@ This makes the report an export of what the reviewer is currently evaluating rat
 than a second diff engine. Hidden differences remain available in Full Diff but are not
 silently added to a Focused Diff report.
 
-Reports are Markdown files saved under `.config-review-reports/`. That directory is
+Reports are Markdown files saved under the visible `reports/` directory. That directory is
 ignored by Git. The same report can be opened in the configured editor or printed to
 the terminal. If the current view has zero selectable differences, the report menu is
 blocked and no empty report or report directory is created.
+
+Older builds used `.config-review-reports/`. Existing files there are left alone and the
+old directory remains ignored, but newly generated reports use `reports/` so reviewers
+can find and share them without enabling hidden-file display.
+
+## Report layout
+
+The Markdown output is organized for quick scanning:
+
+1. A title names the current file and view.
+2. A compact summary table shows short TEST/DEV paths, repository freshness, and what
+   the current Focused Diff omitted.
+3. Each visible change gets a numbered context heading and a one-line TEST-to-DEV
+   location summary.
+4. The literal changed lines appear in a dedicated diff block.
+5. Optional Git attribution appears in a table below the corresponding change.
+
+Paths are shown relative to the selected project or Git root when possible, rather than
+as long machine-specific absolute paths.
 
 ## Context labels
 

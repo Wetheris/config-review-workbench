@@ -88,8 +88,13 @@ env:
         include_git_context=False,
     )
 
-    assert "Visible differences:** 1" in report
-    assert "Environment variable · SPRING_PROFILES_ACTIVE" in report
+    assert "# Config Review — `values.yaml`" in report
+    assert "1 visible change" in report
+    assert "## 1. Environment variable · `SPRING_PROFILES_ACTIVE`" in report
+    assert "### Difference (TEST → DEV)" in report
+    assert "| TEST | `test/values.yaml` |" in report
+    assert "| DEV | `dev/values.yaml` |" in report
+    assert str(root) not in report
     assert 'value: "prod"' in report
     assert 'value: "prod,seed"' in report
     assert "SPRING_CONFIG_ADDITIONAL_LOCATION" not in report
@@ -100,10 +105,10 @@ env:
         include_context_labels=True,
         include_git_context=False,
     )
-    assert saved.parent.name == ".config-review-reports"
+    assert saved.parent.name == "reports"
     saved_text = saved.read_text(encoding="utf-8")
-    assert "Environment variable · SPRING_PROFILES_ACTIVE" in saved_text
-    assert "Visible differences:** 1" in saved_text
+    assert "Environment variable · `SPRING_PROFILES_ACTIVE`" in saved_text
+    assert "1 visible change" in saved_text
 
 
 def test_report_includes_line_commit_context_when_available(tmp_path: Path):
@@ -131,10 +136,12 @@ def test_report_includes_line_commit_context_when_available(tmp_path: Path):
         include_git_context=True,
     )
 
-    assert "Environment variable · LOGGING_LEVEL_ROOT" in report
+    assert "Environment variable · `LOGGING_LEVEL_ROOT`" in report
+    assert "### Git context" in report
+    assert "| Side | Attribution | Commit | Date | Author | Commit message |" in report
     assert "Set environment logging defaults" in report
-    assert "TEST (line)" in report
-    assert "DEV (line)" in report
+    assert "| TEST | Line |" in report
+    assert "| DEV | Line |" in report
 
 
 def test_git_status_fetch_detects_branch_behind_remote(tmp_path: Path):
@@ -190,7 +197,7 @@ def test_blank_focused_report_is_not_generated(tmp_path: Path):
         workbench.generate_file_report(record, mode="focused")
     with pytest.raises(WorkbenchError, match="No visible differences"):
         workbench.save_file_report(record, mode="focused")
-    assert not (root / ".config-review-reports").exists()
+    assert not (root / "reports").exists()
 
 
 class _FakeScreen:

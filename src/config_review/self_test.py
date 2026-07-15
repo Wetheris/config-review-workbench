@@ -329,8 +329,8 @@ def run_regression_tests() -> int:
                     include_context_labels=True,
                     include_git_context=False,
                 )
-                assert "Visible differences:** 1" in report
-                assert "Environment variable · LOGGING_LEVEL_ROOT" in report
+                assert "1 visible change" in report
+                assert "Environment variable · `LOGGING_LEVEL_ROOT`" in report
                 assert "value: INFO" in report
                 assert "value: DEBUG" in report
 

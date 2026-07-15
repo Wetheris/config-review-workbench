@@ -684,16 +684,52 @@ class Workbench:
         return test_context, dev_context
 
     @staticmethod
-    def _render_commit_context(label: str, contexts: Sequence[GitCommitContext]) -> list[str]:
+    def _markdown_table_cell(value: object) -> str:
+        """Escape a value for a compact Markdown table cell."""
+        return str(value).replace("|", r"\|").replace("\r", " ").replace("\n", " ")
+
+    def _report_display_path(self, path: Path) -> str:
+        """Prefer a short project-relative path in reports."""
+        resolved = path.resolve()
+        bases = [self.settings.config_file.parent.resolve()]
+        if self.git_root is not None:
+            bases.append(self.git_root.resolve())
+        for base in bases:
+            try:
+                return resolved.relative_to(base).as_posix()
+            except ValueError:
+                continue
+        return str(resolved)
+
+    @staticmethod
+    def _report_change_heading(label: str) -> str:
+        """Make deterministic context labels easier to scan as headings."""
+        if " · " not in label:
+            return label
+        category, subject = label.split(" · ", 1)
+        safe_subject = subject.replace("`", "'")
+        return f"{category} · `{safe_subject}`"
+
+    @classmethod
+    def _render_commit_context_rows(
+        cls,
+        label: str,
+        contexts: Sequence[GitCommitContext],
+    ) -> list[str]:
         if not contexts:
-            return [f"- **{label}:** No tracked commit context was available."]
+            return [f"| {label} | — | — | — | — | No tracked commit context was available |"]
         lines: list[str] = []
         for context in contexts:
-            scope = "line" if context.source == "line" else "file fallback"
-            lines.append(
-                f"- **{label} ({scope}):** `{context.short_hash}` · "
-                f"{context.date} · {context.author} · {context.subject}"
+            scope = "Line" if context.source == "line" else "File fallback"
+            cells = (
+                label,
+                scope,
+                f"`{context.short_hash}`",
+                context.date,
+                context.author,
+                context.subject,
             )
+            lines.append("| " + " | ".join(cls._markdown_table_cell(cell) for cell in cells) + " |")
         return lines
 
     def generate_file_report(
@@ -704,7 +740,7 @@ class Workbench:
         include_context_labels: bool = True,
         include_git_context: bool = True,
     ) -> str:
-        """Generate Markdown for the current file's selectable differences."""
+        """Generate a readable Markdown report for the current file view."""
         presentation = self._report_presentation(record, mode)
         blocks = list(presentation.change_blocks)
         if not blocks:
@@ -712,50 +748,106 @@ class Workbench:
                 "No visible differences are available in the current view; "
                 "report was not generated."
             )
+
         view_name = "Full Diff" if mode == "full" else "Focused Diff"
         generated = datetime.now().astimezone().isoformat(timespec="seconds")
-        git_note = self.git_status.summary
+        change_word = "change" if len(blocks) == 1 else "changes"
         lines = [
-            "# Config Review Report",
+            f"# Config Review — `{record.relative_path}`",
             "",
-            f"- **File:** `{record.relative_path}`",
-            f"- **View:** {view_name}",
-            f"- **Visible differences:** {len(blocks)}",
-            f"- **Generated:** {generated}",
-            f"- **DEV:** `{record.dev_path}`",
-            f"- **TEST:** `{record.test_path}`",
-            f"- **Repository status:** {git_note}",
+            f"> **{view_name}** · **{len(blocks)} visible {change_word}** · generated `{generated}`",
+            "",
+            "## Review summary",
+            "",
+            "| Item | Details |",
+            "|---|---|",
+            f"| TEST | `{self._report_display_path(record.test_path)}` |",
+            f"| DEV | `{self._report_display_path(record.dev_path)}` |",
+            f"| Repository | {self._markdown_table_cell(self.git_status.summary)} |",
         ]
-        if mode == "focused":
-            lines.append(
-                "- **Scope:** Only currently selectable Focused Diff changes are included; "
-                "hidden noise and handled changes are omitted."
-            )
-        else:
-            lines.append("- **Scope:** Full literal text differences are included.")
-        lines.append("")
 
-        for index, block in enumerate(blocks, start=1):
-            label = (
-                self._change_context_label(record, block) if include_context_labels else "Change"
-            )
+        if mode == "focused":
+            omitted = []
+            if presentation.handled_count:
+                omitted.append(f"{presentation.handled_count} handled")
+            if presentation.pattern_hidden_count:
+                omitted.append(f"{presentation.pattern_hidden_count} noise-filtered")
+            if presentation.whitespace_hidden_count:
+                omitted.append(f"{presentation.whitespace_hidden_count} whitespace-only")
+            if presentation.mapping_order_hidden_count:
+                omitted.append(f"{presentation.mapping_order_hidden_count} order-only")
             lines.extend(
                 [
-                    f"## Change {index} — {label}",
-                    "",
-                    f"- **Location:** TEST {_range_text(block.old_start, block.old_end)} · "
-                    f"DEV {_range_text(block.new_start, block.new_end)}",
-                    f"- **Summary:** {change_block_summary(block)}",
+                    "| Included | Currently selectable Focused Diff changes |",
+                    "| Omitted | "
+                    + self._markdown_table_cell(" · ".join(omitted) if omitted else "None")
+                    + " |",
                 ]
             )
-            if include_git_context:
-                test_context, dev_context = self._block_git_context(record, block)
-                lines.extend(self._render_commit_context("TEST", test_context))
-                lines.extend(self._render_commit_context("DEV", dev_context))
-            lines.extend(["", "```diff"])
+        else:
+            lines.append("| Included | Literal selectable Full Diff changes |")
+
+        lines.extend(
+            [
+                "",
+                "> This report mirrors the current view. It does not silently add hidden or "
+                "handled changes.",
+                "",
+            ]
+        )
+
+        for index, block in enumerate(blocks, start=1):
+            raw_label = (
+                self._change_context_label(record, block)
+                if include_context_labels
+                else "Configuration change"
+            )
+            heading = self._report_change_heading(raw_label)
+            location = (
+                f"TEST `{_range_text(block.old_start, block.old_end)}` → "
+                f"DEV `{_range_text(block.new_start, block.new_end)}`"
+            )
+            summary = change_block_summary(block)
+            lines.extend(
+                [
+                    f"## {index}. {heading}",
+                    "",
+                    f"> **{location}** · {summary}",
+                    "",
+                    "### Difference (TEST → DEV)",
+                    "",
+                    "```diff",
+                ]
+            )
             lines.extend(f"- {line}" for line in block.old_lines)
             lines.extend(f"+ {line}" for line in block.new_lines)
             lines.extend(["```", ""])
+
+            if include_git_context:
+                test_context, dev_context = self._block_git_context(record, block)
+                lines.extend(
+                    [
+                        "### Git context",
+                        "",
+                        "| Side | Attribution | Commit | Date | Author | Commit message |",
+                        "|---|---|---|---|---|---|",
+                    ]
+                )
+                lines.extend(self._render_commit_context_rows("TEST", test_context))
+                lines.extend(self._render_commit_context_rows("DEV", dev_context))
+                lines.append("")
+
+            if index != len(blocks):
+                lines.extend(["---", ""])
+
+        lines.extend(
+            [
+                "---",
+                "",
+                "_Generated by Config Review Workbench from the currently visible file view._",
+                "",
+            ]
+        )
         return "\n".join(lines)
 
     def save_file_report(
@@ -773,7 +865,7 @@ class Workbench:
             include_context_labels=include_context_labels,
             include_git_context=include_git_context,
         )
-        report_dir = self.settings.config_file.parent / ".config-review-reports"
+        report_dir = self.settings.config_file.parent / "reports"
         report_dir.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", record.relative_path).strip("-")
         timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")

@@ -233,7 +233,9 @@ The **Visible-diff report** is intentionally scoped to the current view:
   ambiguous.
 
 Reports can be opened in the configured editor, saved as Markdown under
-`.config-review-reports/`, or printed to the terminal. The report directory is ignored
+`reports/`, or printed to the terminal. Reports use a compact review summary, numbered
+change sections, TEST-to-DEV diff blocks, and an optional Git-context table. Paths are
+shortened relative to the project when possible. The visible report directory is ignored
 by Git. When the current view has no selectable differences, report actions are disabled
 and no empty report file or directory is created.
 

@@ -438,7 +438,7 @@ def plain_report_options(workbench: Workbench, record: FileRecord, *, mode: str)
         print(f"[1] [{'x' if include_context_labels else ' '}] Context labels")
         print(f"[2] [{'x' if include_git_context else ' '}] Git commit context")
         print("[o] Open report in editor")
-        print("[s] Save report under .config-review-reports/")
+        print("[s] Save report under reports/")
         print("[p] Print report to terminal")
         print("[b] Back")
         try:

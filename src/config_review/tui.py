@@ -2339,7 +2339,7 @@ class Tui:
                     "Open report in editor",
                     "Save the Markdown report locally and open it with the configured editor.",
                 ),
-                ("save", "Save report", "Write the Markdown report under .config-review-reports/."),
+                ("save", "Save report", "Write the Markdown report under reports/."),
                 (
                     "print",
                     "Print report to terminal",
@@ -3023,7 +3023,7 @@ class Tui:
             "  The report includes only selectable differences from the current file view.",
             "  Optional context labels are deterministic and offline; they do not infer intent.",
             "  Optional Git context uses line blame, then falls back to the latest file commit.",
-            "  Reports can be opened in the editor, saved under .config-review-reports,",
+            "  Reports can be opened in the editor, saved under reports/,",
             "  or printed to the terminal.",
             "",
             "Selected-change actions",
