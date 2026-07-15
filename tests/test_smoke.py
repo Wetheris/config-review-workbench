@@ -8,5 +8,5 @@ def test_version():
 
 def test_default_arguments():
     args = parse_args([])
-    assert str(args.source) == "dev"
-    assert str(args.target) == "test"
+    assert args.source is None
+    assert args.target is None

@@ -43,12 +43,16 @@ from . import core as _core
 from .core import (
     AppSettings,
     DEBUG_LOG_PATH,
+    DEFAULT_EXCLUDED_DIRS,
     DEFAULT_PROJECT_CONFIG,
     VERSION,
     WorkbenchError,
     debug,
     find_git_root,
     init_project_config,
+    load_project_paths,
+    resolve_configured_path,
+    save_project_paths,
 )
 from .workbench import (
     Workbench,
@@ -71,8 +75,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "project-wide pattern suggestions and an always-unfiltered Full Diff."
         )
     )
-    parser.add_argument("--source", type=Path, default=Path("dev"), help="Incoming/source directory")
-    parser.add_argument("--target", type=Path, default=Path("test"), help="Current/target directory to review or edit")
+    parser.add_argument(
+        "--source",
+        type=Path,
+        default=None,
+        help="Incoming/source directory; overrides the project configuration",
+    )
+    parser.add_argument(
+        "--target",
+        type=Path,
+        default=None,
+        help="Current/target directory; overrides the project configuration",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -126,17 +140,182 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--context must be zero or greater")
     return args
 
-def resolve_project_config(source: Path, target: Path, supplied: Path | None) -> Path:
+def project_base_directory() -> Path:
+    """Choose the repository/launch directory used by first-run setup."""
+    cwd = Path.cwd().resolve()
+    cwd_git_root = find_git_root(cwd)
+    if cwd_git_root is not None:
+        return cwd_git_root
+    executable = Path(sys.argv[0]).expanduser()
+    if executable.exists():
+        executable_parent = executable.resolve().parent
+        executable_git_root = find_git_root(executable_parent)
+        return executable_git_root or executable_parent
+    return cwd
+
+def resolve_project_config(supplied: Path | None, base: Path) -> Path:
     if supplied is not None:
         return supplied.expanduser().resolve()
-    git_root = find_git_root(target) or find_git_root(source)
-    if git_root is not None:
-        return git_root / DEFAULT_PROJECT_CONFIG
+    return base / DEFAULT_PROJECT_CONFIG
+
+FIRST_RUN_EXCLUDED_DIRS = set(DEFAULT_EXCLUDED_DIRS) | {
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    ".tox",
+    ".mypy_cache",
+}
+FIRST_RUN_EXCLUDED_DIRS_LOWER = {name.lower() for name in FIRST_RUN_EXCLUDED_DIRS}
+
+def discover_dev_test_pairs(base: Path, *, max_depth: int = 6) -> list[tuple[Path, Path]]:
+    """Find sibling directories named dev and test beneath the project base."""
+    base = base.resolve()
+    found: list[tuple[Path, Path]] = []
+    for root_text, dirnames, _filenames in os.walk(base, followlinks=False):
+        root = Path(root_text)
+        try:
+            depth = len(root.relative_to(base).parts)
+        except ValueError:
+            continue
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name.lower() not in FIRST_RUN_EXCLUDED_DIRS_LOWER
+            and not (root / name).is_symlink()
+            and depth < max_depth
+        )
+        by_lower = {name.lower(): name for name in dirnames}
+        if "dev" in by_lower and "test" in by_lower:
+            source = (root / by_lower["dev"]).resolve()
+            target = (root / by_lower["test"]).resolve()
+            if source.is_dir() and target.is_dir():
+                found.append((source, target))
+    return sorted(
+        set(found),
+        key=lambda pair: (
+            len(pair[0].relative_to(base).parts),
+            pair[0].as_posix().lower(),
+            pair[1].as_posix().lower(),
+        ),
+    )
+
+def _relative_display(path: Path, base: Path) -> str:
     try:
-        common = Path(os.path.commonpath([source, target]))
+        text = path.resolve().relative_to(base.resolve()).as_posix()
+        return text or "."
     except ValueError:
-        common = Path.cwd()
-    return common / DEFAULT_PROJECT_CONFIG
+        return str(path.resolve())
+
+def _prompt_existing_directory(label: str, base: Path) -> Path:
+    while True:
+        raw = input(f"{label} directory, relative to {base}: ").strip()
+        if not raw:
+            print("Please enter a directory path.")
+            continue
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        candidate = candidate.resolve()
+        if candidate.is_dir():
+            return candidate
+        print(f"Directory not found: {candidate}")
+
+def _confirm_pair(source: Path, target: Path, base: Path) -> bool:
+    print("\nFound likely configuration directories:")
+    print(f"  DEV/source:  {_relative_display(source, base)}")
+    print(f"  TEST/target: {_relative_display(target, base)}")
+    answer = input("Use these directories? [Y/n]: ").strip().lower()
+    return answer in {"", "y", "yes"}
+
+def interactive_first_run_paths(base: Path) -> tuple[Path, Path]:
+    """Discover, confirm, or manually collect a source/target pair."""
+    pairs = discover_dev_test_pairs(base)
+    if len(pairs) == 1 and _confirm_pair(*pairs[0], base):
+        return pairs[0]
+    if len(pairs) > 1:
+        print("\nFound multiple DEV/TEST directory pairs:")
+        for index, (source, target) in enumerate(pairs, start=1):
+            print(
+                f"  {index}. DEV/source {_relative_display(source, base)}  |  "
+                f"TEST/target {_relative_display(target, base)}"
+            )
+        while True:
+            answer = input("Select a pair number, or M to enter paths manually: ").strip().lower()
+            if answer in {"m", "manual"}:
+                break
+            try:
+                selected = int(answer) - 1
+            except ValueError:
+                print("Enter a listed number or M.")
+                continue
+            if 0 <= selected < len(pairs):
+                source, target = pairs[selected]
+                if _confirm_pair(source, target, base):
+                    return source, target
+                break
+            print("That selection is outside the listed range.")
+    elif len(pairs) == 1:
+        print("Automatic discovery was declined. Enter the project directories manually.")
+    else:
+        print("\nNo sibling directories named dev and test were found automatically.")
+
+    source = _prompt_existing_directory("DEV/source", base)
+    target = _prompt_existing_directory("TEST/target", base)
+    print("\nUsing configuration directories:")
+    print(f"  DEV/source:  {_relative_display(source, base)}")
+    print(f"  TEST/target: {_relative_display(target, base)}")
+    return source, target
+
+def resolve_project_paths(
+    args: argparse.Namespace,
+    config_file: Path,
+    base: Path,
+) -> tuple[Path, Path, bool]:
+    """Resolve CLI/config/first-run paths and report whether they were newly saved."""
+    if (args.source is None) != (args.target is None):
+        raise WorkbenchError("Use --source and --target together, or omit both.")
+
+    if args.source is not None and args.target is not None:
+        source = args.source.expanduser()
+        target = args.target.expanduser()
+        if not source.is_absolute():
+            source = Path.cwd() / source
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        source = source.resolve()
+        target = target.resolve()
+        if not source.is_dir():
+            raise WorkbenchError(f"DEV/source directory does not exist: {source}")
+        if not target.is_dir():
+            raise WorkbenchError(f"TEST/target directory does not exist: {target}")
+        configured = load_project_paths(config_file)
+        newly_saved = not config_file.exists() or not all(configured)
+        if newly_saved:
+            save_project_paths(config_file, source, target)
+        return source, target, newly_saved
+
+    configured_source, configured_target = load_project_paths(config_file)
+    if configured_source and configured_target:
+        return (
+            resolve_configured_path(config_file, configured_source),
+            resolve_configured_path(config_file, configured_target),
+            False,
+        )
+    if configured_source or configured_target:
+        raise WorkbenchError(
+            f"Both paths.source and paths.target are required in {config_file}."
+        )
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise WorkbenchError(
+            "No project paths are configured and first-run setup requires an interactive "
+            "terminal. Run with --source and --target once, or add paths.source and "
+            f"paths.target to {config_file}."
+        )
+    source, target = interactive_first_run_paths(base)
+    save_project_paths(config_file, source, target)
+    return source, target, True
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
@@ -156,22 +335,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.self_test:
         return run_regression_tests()
 
-    source = args.source.expanduser().resolve()
-    target = args.target.expanduser().resolve()
-    if not source.is_dir():
-        print(f"error: DEV source directory does not exist: {source}", file=sys.stderr)
-        return 2
-    if not target.exists():
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            print(f"error: could not create TEST target directory {target}: {exc}", file=sys.stderr)
-            return 2
-    if not target.is_dir():
-        print(f"error: TEST target is not a directory: {target}", file=sys.stderr)
-        return 2
-
-    config_file = resolve_project_config(source, target, args.config)
+    base = project_base_directory()
+    config_file = resolve_project_config(args.config, base)
     if args.init_config:
         try:
             init_project_config(config_file)
@@ -180,6 +345,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(f"Created {config_file}")
         return 0
+
+    try:
+        source, target, newly_saved = resolve_project_paths(args, config_file, base)
+    except WorkbenchError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if newly_saved:
+        print(f"Saved verified project paths to {config_file}")
+    if not source.is_dir():
+        print(
+            f"error: configured DEV/source directory does not exist: {source}\n"
+            f"Update paths.source in {config_file} or run with --source and --target.",
+            file=sys.stderr,
+        )
+        return 2
+    if not target.is_dir():
+        print(
+            f"error: configured TEST/target directory does not exist: {target}\n"
+            f"Update paths.target in {config_file} or run with --source and --target.",
+            file=sys.stderr,
+        )
+        return 2
 
     settings = AppSettings(
         source=source,

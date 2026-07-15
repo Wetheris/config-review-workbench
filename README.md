@@ -1,38 +1,54 @@
 # Config Review Workbench 1.0.0
 
-Config Review Workbench is an interactive terminal application for reviewing
-exact differences between an incoming **source** configuration tree and a
-current **target** tree. It is useful for Kubernetes, Helm, OpenShift, YAML, and
-other text-based configuration repositories while deliberately avoiding
-automatic semantic merge guesses.
-
-The interface may describe the two sides as **DEV/incoming** and
-**TEST/current**, but the paths can point to any two project directories.
+Config Review Workbench is an interactive terminal workbench for reviewing exact configuration
+differences from **DEV/incoming** into **TEST/current**. It is designed for
+Kubernetes, Helm, OpenShift, and YAML-heavy repositories while deliberately
+avoiding automatic semantic merge guesses.
 
 ## Release model
 
-This repository begins the public release history at **1.0.0**. Earlier build
-numbers were internal development iterations and are not part of the published
-version history.
+This repository begins the public release history at **1.0.0**. Features added during
+initial development remain part of the 1.0.0 working release until a later public
+version is explicitly chosen. Earlier build numbers were internal development
+iterations and are not part of the published version history.
 
-The repository is modular for development and testing, while releases remain a
-single portable executable archive:
+The repository is modular for development and testing, but releases remain one
+portable executable archive:
 
 ```bash
-./config-review.pyz --source environments/dev --target environments/test
+./config-review.pyz
 ```
 
 The archive includes the pure-Python `ruamel.yaml` package when built with the
 default `build.py` settings. The target host only needs Python 3.10 or newer.
 
-## Project names
+## First-run project setup
 
-- Product: **Config Review Workbench**
-- Repository: `config-review-workbench`
-- Command: `config-review`
-- Portable executable: `config-review.pyz`
-- Python package: `config_review`
-- Project configuration: `.config-review.yaml`
+The first normal launch looks beneath the repository root for sibling directories
+named `dev` and `test`. When one likely pair is found, the tool displays both
+paths and asks you to confirm them. If multiple pairs are found, you can select
+one; if no pair is found, the tool asks for the DEV/source and TEST/target
+directories relative to the repository or executable location.
+
+Verified paths are stored relative to `.config-review.yaml`:
+
+```yaml
+version: 8
+paths:
+  source: eids/dev
+  target: eids/test
+```
+
+Later launches reuse these paths without prompting. Command-line paths override
+the saved values for that run. Supplying both paths on an unconfigured project
+also saves them automatically:
+
+```bash
+./config-review.pyz --source eids/dev --target eids/test
+```
+
+Non-interactive runs must provide both options or use a configuration file that
+already contains `paths.source` and `paths.target`.
 
 ## Source layout
 
@@ -64,40 +80,22 @@ python3 dist/config-review.pyz --self-test
 
 ```bash
 PYTHONPATH=src python3 -m config_review \
-  --source environments/dev \
-  --target environments/test
+  --source eids/dev \
+  --target eids/test
 ```
-
-With no path arguments, the command compares `dev/` against `test/` in the
-current directory.
-
-## Project configuration
-
-Create a starter project configuration with:
-
-```bash
-./config-review.pyz --init-config
-```
-
-This creates `.config-review.yaml` at the Git root or the common source/target
-parent directory.
 
 ## GitHub publication
 
-Create an empty GitHub repository named `config-review-workbench`, then run from
-this directory:
+Create an empty GitHub repository, then run from this directory:
 
 ```bash
 git init
 git add .
-git commit -m "Release Config Review Workbench 1.0.0"
+git commit -m "Initial release: Config Review Workbench 1.0.0"
 git branch -M main
-git remote add origin git@github.com:YOUR-ACCOUNT/config-review-workbench.git
+git remote add origin git@github.com:YOUR-ACCOUNT/config-review.git
 git push -u origin main
-
-git tag -a v1.0.0 -m "Config Review Workbench 1.0.0"
-git push origin v1.0.0
 ```
 
 For releases, attach `dist/config-review.pyz` to a GitHub Release rather than
-committing generated artifacts when your team prefers source-only history.
+committing generated artifacts if your team prefers source-only history.

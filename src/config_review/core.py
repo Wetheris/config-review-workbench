@@ -1152,7 +1152,14 @@ PROJECT_CONFIG_TEMPLATE = """# Config Review Workbench project configuration
 # Version/image/release and operational changes are always left visible.
 # Full Diff is always unfiltered.
 
-version: 7
+version: 8
+
+# Verified project directories. Paths are stored relative to this configuration
+# file so the repository remains portable between machines and checkouts.
+# The first normal launch discovers or prompts for these values automatically.
+paths:
+  source:
+  target:
 
 scan:
   exclude_dirs:
@@ -1232,6 +1239,88 @@ def _yaml_write(path: Path, data: Mapping[str, Any]) -> None:
                 temp.unlink()
             except OSError:
                 pass
+
+def load_project_paths(path: Path) -> tuple[str | None, str | None]:
+    """Load configured source and target directory strings without resolving them.
+
+    Stored paths are interpreted relative to the directory containing the project
+    configuration. Absolute paths remain supported for unusual deployments, but
+    first-run setup writes relative paths whenever possible.
+    """
+    if not path.exists():
+        return None, None
+    root = _yaml_load(path) or {}
+    if not isinstance(root, Mapping):
+        raise WorkbenchError(f"Project configuration root must be a mapping: {path}")
+    paths = root.get("paths", {}) or {}
+    if not isinstance(paths, Mapping):
+        raise WorkbenchError(f"'paths' must be a mapping in {path}")
+    raw_source = paths.get("source")
+    raw_target = paths.get("target")
+    source = str(raw_source).strip() if raw_source is not None else None
+    target = str(raw_target).strip() if raw_target is not None else None
+    source = source or None
+    target = target or None
+    return source, target
+
+def resolve_configured_path(config_file: Path, value: str) -> Path:
+    """Resolve one configured path relative to the project configuration."""
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = config_file.parent / candidate
+    return candidate.resolve()
+
+def _portable_config_path(config_file: Path, path: Path) -> str:
+    """Return a stable path string relative to the project configuration."""
+    resolved = path.expanduser().resolve()
+    try:
+        relative = Path(os.path.relpath(resolved, config_file.parent.resolve()))
+        return relative.as_posix()
+    except ValueError:
+        # Different Windows drives cannot be represented with a relative path.
+        return str(resolved)
+
+def _default_project_config_data() -> dict[str, Any]:
+    return {
+        "version": 8,
+        "scan": {"exclude_dirs": sorted(DEFAULT_EXCLUDED_DIRS)},
+        "display": {
+            "show_whitespace": False,
+            "hide_mapping_order": False,
+            "mute_non_focused": False,
+        },
+        "patterns": [],
+    }
+
+def save_project_paths(path: Path, source: Path, target: Path) -> None:
+    """Merge verified source/target directories into the project configuration."""
+    if path.exists():
+        root = _yaml_load(path) or {}
+        if not isinstance(root, Mapping):
+            raise WorkbenchError(f"Project configuration root must be a mapping: {path}")
+        data: dict[str, Any] = dict(root)
+    else:
+        data = _default_project_config_data()
+    try:
+        current_version = int(data.get("version", 0) or 0)
+    except (TypeError, ValueError):
+        current_version = 0
+    data["version"] = max(current_version, 8)
+    data["paths"] = {
+        "source": _portable_config_path(path, source),
+        "target": _portable_config_path(path, target),
+    }
+    data.setdefault("scan", {"exclude_dirs": sorted(DEFAULT_EXCLUDED_DIRS)})
+    data.setdefault(
+        "display",
+        {
+            "show_whitespace": False,
+            "hide_mapping_order": False,
+            "mute_non_focused": False,
+        },
+    )
+    data.setdefault("patterns", [])
+    _yaml_write(path, data)
 
 def load_project_config(path: Path) -> tuple[list[PatternRule], set[str], bool, bool, bool, list[str]]:
     patterns: list[PatternRule] = []
@@ -1334,8 +1423,13 @@ def save_project_config(
     hide_mapping_order: bool,
     mute_non_focused: bool,
 ) -> None:
+    existing_paths: Mapping[str, Any] | None = None
+    if path.exists():
+        existing = _yaml_load(path) or {}
+        if isinstance(existing, Mapping) and isinstance(existing.get("paths"), Mapping):
+            existing_paths = existing["paths"]
     data: dict[str, Any] = {
-        "version": 7,
+        "version": 8,
         "scan": {"exclude_dirs": sorted(excluded_dirs)},
         "display": {
             "show_whitespace": not bool(hide_whitespace),
@@ -1344,6 +1438,8 @@ def save_project_config(
         },
         "patterns": [],
     }
+    if existing_paths is not None:
+        data["paths"] = dict(existing_paths)
     raw_patterns: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     category_rank = {name: index for index, name in enumerate(CATEGORY_ORDER)}
