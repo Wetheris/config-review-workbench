@@ -2,7 +2,7 @@
 # ruamel.yaml is also required by the workbench tests and config-writing code.
 ruamel.yaml>=0.18
 ruff>=0.9
-pytest>=8
+pytest>=9.1.1
 bandit[toml]>=1.8
 pip-audit>=2.7
 pre-commit>=4
