@@ -227,6 +227,9 @@ matching reasons remain available in Filter Details.
 Enabled project patterns are saved in `.config-review.yaml` and apply across the
 whole project on later runs.
 
+For the exact candidate-generation rules and safeguards, see
+[Filter Discovery Logic](docs/filter-discovery.md).
+
 ### Always-reviewed changes
 
 Pattern rules cannot hide protected changes such as:
