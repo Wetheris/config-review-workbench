@@ -285,11 +285,43 @@ examples/demo-project/
 Run the workbench from the repository and choose `examples/demo-project` during
 project setup to explore the basic workflow without using a real configuration repo.
 
+## Development commands
+
+Install the development tools once inside a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+```
+
+The Makefile provides short, consistent commands for local development:
+
+```bash
+make help       # List all available commands
+make test       # Run pytest
+make self-test  # Run the application regression suite from source
+make lint       # Compile Python and run Ruff correctness checks
+make format     # Apply safe Ruff fixes and format Python files
+make security   # Run Bandit and dependency vulnerability checks
+make check      # Run all read-only checks
+make build      # Test, build, and validate the packaged .pyz
+make clean      # Remove generated build and cache files
+```
+
+The commands are intentionally separate. `make check` is read-only and is the best
+final check before committing or pushing. `make format` is separate because it modifies
+source files. `make build` validates both the source application and the generated
+portable archive, since packaging can introduce problems that source-only tests cannot
+catch.
+
 ## Build
+
+Install the build dependency and create the portable executable:
 
 ```bash
 python3 -m pip install -r requirements-build.txt
-python3 build.py
+make build
 ```
 
 The portable executable is created at:
@@ -298,12 +330,15 @@ The portable executable is created at:
 dist/config-review.pyz
 ```
 
-## Test
+## Test without Make
+
+The underlying commands remain available when `make` is not installed:
 
 ```bash
+python3 -m pytest -q
 PYTHONPATH=src python3 -m config_review --self-test
 python3 dist/config-review.pyz --self-test
-python3 -m pytest
+python3 scripts/check_project.py all
 ```
 
 ## Run from source

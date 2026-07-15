@@ -9,7 +9,8 @@ The project now has the same basic checks locally, before a commit, and in GitLa
 | Python compilation | Catches syntax errors before execution | Blocks |
 | Ruff lint | Catches undefined names, unused imports, and common correctness errors | Blocks |
 | Ruff format check | Reports inconsistent formatting | Warning |
-| pytest / embedded `--self-test` | Catches behavioral regressions | Blocks |
+| pytest | Catches behavioral regressions in the source modules | Blocks |
+| Application `--self-test` | Validates the source app and built `.pyz` as complete executables | Run by `make self-test` / `make build` |
 | Bandit | Finds common Python security mistakes | Warning |
 | pip-audit | Checks runtime and build dependencies for known vulnerabilities | Warning |
 | GitLab SAST | Performs GitLab's source security analysis | Reported by GitLab |
@@ -45,6 +46,37 @@ python scripts/check_project.py format
 python scripts/check_project.py test
 python scripts/check_project.py security
 ```
+
+## Why the Makefile commands are separate
+
+The Makefile is a convenience layer over the same tools used by the project and CI. It
+does not introduce another testing system.
+
+| Command | Why it exists |
+|---|---|
+| `make test` | Runs the fast pytest suite while developing behavior. |
+| `make self-test` | Runs the application's built-in regression flow from source, exercising startup and integrated behavior. |
+| `make lint` | Performs syntax compilation and Ruff correctness checks without changing files. |
+| `make format` | Applies safe Ruff fixes and formatting. It is separate because it intentionally edits files. |
+| `make security` | Scans repository-owned source with Bandit and audits declared build/runtime dependencies. |
+| `make check` | Runs every read-only local gate before a commit or push. |
+| `make build` | Runs tests, builds the `.pyz`, and runs the packaged self-test. This verifies the distributed artifact, not only the source tree. |
+| `make clean` | Removes generated artifacts and project caches while leaving `.venv` and source files untouched. |
+
+Keeping these responsibilities separate makes failures easier to understand. A test
+failure means behavior changed, a lint failure means a code-quality problem exists, and
+a packaged self-test failure means the build artifact differs from the working source.
+
+The preferred local flow is:
+
+```bash
+make format
+make check
+make build
+```
+
+Review `git diff` after `make format`, because formatting and automatic fixes modify the
+working tree.
 
 ## Commit-time checks
 
