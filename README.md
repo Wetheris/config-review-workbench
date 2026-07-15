@@ -46,15 +46,15 @@ shown in red, while DEV/incoming values are shown in green.
 
 ### Pattern Manager
 
-Press `p` from the main file list to inspect repeated project-wide replacements
-before deciding whether Focused Diff should collapse them.
+Press `p` from the main file list to audit repeated project-wide replacements
+that Focused Diff collapses by default.
 
 ![Pattern Manager](docs/images/pattern-manager.png)
 
 ### Filtered differences
 
-Filtered changes are still real differences. Focused Diff may collapse them after a
-user-approved rule is enabled, while Full Diff always shows the original text.
+Filtered changes are still real differences. Focused Diff collapses qualifying noise
+by default, while Full Diff always shows the original text.
 
 ![Collapsed and expanded filtered changes](docs/images/filtered-diff.png)
 
@@ -100,7 +100,7 @@ Ctrl+C cancels setup cleanly.
 Verified paths are stored in `.config-review.yaml`:
 
 ```yaml
-version: 8
+version: 9
 paths:
   project: ../../examples/demo-project
   source: dev
@@ -126,9 +126,18 @@ Press `c` from the main file list and open **Comparison paths**. You can either:
 When review progress exists, the workbench asks to save the current session before
 switching. The verified paths are then written to `.config-review.yaml`, the new
 project is rescanned immediately, and any saved session for that comparison can be
-loaded. Previously enabled project patterns are disabled during the switch so a new
-comparison is never hidden using approvals from a different path; review and enable
-them again from Pattern filters. Display settings remain project-configured.
+loaded. Previously saved project patterns are disabled during the switch so approvals
+from one comparison are not carried into another. Newly discovered noise suggestions
+still use the quick-review default described below. Display settings remain
+project-configured.
+
+### Configuration behavior across updates
+
+`.config-review.yaml` is local runtime state and is ignored by Git. Pulling a new
+source build or replacing `dist/config-review.pyz` does **not** overwrite it. New
+defaults apply only when the config file or a setting is missing; explicit existing
+settings and pattern choices are preserved. The application writes the file only when
+you change paths, filters, patterns, or other project settings.
 
 ## Basic walkthrough
 
@@ -205,9 +214,10 @@ only advertises the most common navigation plus `c`, `?`, and `q` on small scree
 
 ## Focused Diff and Full Diff
 
-**Focused Diff** may collapse changes matched by explicitly enabled project patterns
-or display filters. Every collapsed block remains represented by a marker explaining
-why it is hidden.
+**Focused Diff** starts in a quick-review mode: whitespace-only blocks, safe YAML
+order-only changes, and discovered repeated noise patterns are collapsed by default.
+Every collapsed block remains represented by a marker explaining why it is hidden.
+Saved per-pattern choices override the generated default.
 
 **Full Diff** never hides anything. It is the authoritative view when you need to
 inspect the exact TEST/current and DEV/incoming text.
@@ -219,8 +229,10 @@ set of changed files for repeated TEST/current → DEV/incoming replacements and
 groups suggestions into categories such as environment identity, application
 domains, endpoints, user references, and storage identifiers.
 
-Pattern suggestions are **visible by default**. Discovery alone never hides a
-change.
+Pattern suggestions are **hidden by default** for an at-a-glance review. Category
+rows start collapsed so the screen initially shows only the summary. Press `Enter` to
+expand a category, then use `Space` to show any pattern that should not be treated as
+noise. Full Diff remains completely literal.
 
 ### Understanding the columns
 
@@ -236,26 +248,29 @@ A hidden change is not removed, accepted, or marked complete. It is only collaps
 in Focused Diff with a `FILTERED DIFF (HIDDEN)` marker and a brief reason. Full Diff
 always shows the original TEST and DEV lines.
 
-### Reviewing and enabling patterns
+### Reviewing pattern defaults
 
 - Use `↑` / `↓` or `j` / `k` to select a row.
+- Press `Enter` on a category to expand or collapse it.
 - Press `Enter` on a pattern to preview its regexes and matching examples with nearby
   context.
-- Press `Space` on an individual pattern to toggle it.
-- Press `Space` on a category to toggle every pattern in that category.
+- Press `Space` on an individual pattern to hide or show it.
+- Press `Space` on a category to hide or show every pattern in that category.
 - Press `f` to open Display Filters.
 - Press `x` to inspect or edit `.config-review.yaml`.
 
-Review a pattern's examples before enabling it. Suggested patterns are regex-based
-evidence of a repeated replacement, not proof that the two values are semantically
-equivalent. Broad hostname or endpoint suggestions deserve particular scrutiny.
+Review broad or surprising patterns before relying on the quick view. Suggested
+patterns are regex-based evidence of a repeated replacement, not proof that the two
+values are semantically equivalent. Broad hostname or endpoint suggestions deserve
+particular scrutiny; show them when they are relevant to the release.
 
 When a changed block matches several patterns, `OVERLAP` reports that relationship.
 The block remains hidden while **any** enabled matching pattern still applies. All
 matching reasons remain available in Filter Details.
 
-Enabled project patterns are saved in `.config-review.yaml` and apply across the
-whole project on later runs.
+Pattern choices are saved in `.config-review.yaml` and apply across the whole
+project on later runs. A saved `VISIBLE` choice overrides the hidden-by-default
+behavior for that rule.
 
 For the exact candidate-generation rules and safeguards, see
 [Filter Discovery Logic](docs/filter-discovery.md). For text alignment, keyed YAML

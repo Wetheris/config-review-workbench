@@ -58,8 +58,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="config-review",
         description=(
-            "Interactive source-to-target configuration review workbench with user-approved "
-            "project-wide pattern suggestions and an always-unfiltered Full Diff."
+            "Interactive source-to-target configuration review workbench with auditable "
+            "project-wide noise filters and an always-unfiltered Full Diff."
         ),
     )
     parser.add_argument(

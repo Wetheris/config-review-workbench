@@ -1205,13 +1205,13 @@ def atomic_write_text(path: Path, text: str) -> None:
 
 PROJECT_CONFIG_TEMPLATE = """# Config Review Workbench project configuration
 #
-# Pattern suggestions are discovered across all changed files. A suggestion is
-# only hidden after a reviewer enables it in the Project Pattern Manager.
-# Enabled patterns apply project-wide and are organized into categories.
+# Pattern suggestions are discovered across all changed files. Qualifying noise
+# suggestions start hidden for quick review, while saved visible choices override
+# that default. Patterns apply project-wide and are organized into categories.
 # Version/image/release and operational changes are always left visible.
 # Full Diff is always unfiltered.
 
-version: 8
+version: 9
 
 # Verified project directories. Paths are stored relative to this configuration
 # file so the repository remains portable between machines and checkouts.
@@ -1233,10 +1233,10 @@ display:
   # Full Diff always shows the original whitespace.
   show_whitespace: false
 
-  # Off by default. When enabled, Focused Diff hides exact scalar mapping
-  # entries whose only change is position under the same parsed parent mapping.
-  # YAML lists are never treated as order-insensitive. Invalid/templates stay visible.
-  hide_mapping_order: false
+  # Hidden by default. Focused Diff collapses exact scalar mapping moves and
+  # unique name-keyed list moves. Changed named items remain visible as one
+  # logical replacement. Ambiguous, invalid, or templated YAML stays visible.
+  hide_mapping_order: true
 
   # Off by default. When enabled, keeps the selected change bright while using a
   # softer palette for surrounding and expanded filtered diff content.
@@ -1390,11 +1390,11 @@ def _portable_config_path(config_file: Path, path: Path) -> str:
 
 def _default_project_config_data() -> dict[str, Any]:
     return {
-        "version": 8,
+        "version": 9,
         "scan": {"exclude_dirs": sorted(DEFAULT_EXCLUDED_DIRS)},
         "display": {
             "show_whitespace": False,
-            "hide_mapping_order": False,
+            "hide_mapping_order": True,
             "mute_non_focused": False,
         },
         "patterns": [],
@@ -1419,7 +1419,7 @@ def save_project_paths(path: Path, source: Path, target: Path) -> None:
         current_version = int(data.get("version", 0) or 0)
     except (TypeError, ValueError):
         current_version = 0
-    data["version"] = max(current_version, 8)
+    data["version"] = max(current_version, 9)
 
     source = source.expanduser().resolve()
     target = target.expanduser().resolve()
@@ -1439,7 +1439,7 @@ def save_project_paths(path: Path, source: Path, target: Path) -> None:
         "display",
         {
             "show_whitespace": False,
-            "hide_mapping_order": False,
+            "hide_mapping_order": True,
             "mute_non_focused": False,
         },
     )
@@ -1454,7 +1454,7 @@ def load_project_config(
     diagnostics: list[str] = []
     excluded = set(DEFAULT_EXCLUDED_DIRS)
     hide_whitespace = True
-    hide_mapping_order = False
+    hide_mapping_order = True
     mute_non_focused = False
     if not path.exists():
         return (
@@ -1486,7 +1486,7 @@ def load_project_config(
     if isinstance(display, Mapping):
         show_whitespace = bool(display.get("show_whitespace", False))
         hide_whitespace = not show_whitespace
-        hide_mapping_order = bool(display.get("hide_mapping_order", False))
+        hide_mapping_order = bool(display.get("hide_mapping_order", True))
         # v6 introduced muting as an enabled-by-default preference. v7 changes
         # the default to OFF, so old generated configs receive the new default
         # once; users can explicitly re-enable it from Display Filters.
@@ -1552,23 +1552,36 @@ def save_project_config(
     hide_mapping_order: bool,
     mute_non_focused: bool,
 ) -> None:
-    existing_paths: Mapping[str, Any] | None = None
+    # Merge known settings into the existing local configuration instead of
+    # rebuilding it from scratch. Pulling or replacing the application never
+    # touches this file, and normal in-app saves preserve unrelated user keys.
+    data: dict[str, Any] = {}
     if path.exists():
         existing = _yaml_load(path) or {}
-        if isinstance(existing, Mapping) and isinstance(existing.get("paths"), Mapping):
-            existing_paths = existing["paths"]
-    data: dict[str, Any] = {
-        "version": 8,
-        "scan": {"exclude_dirs": sorted(excluded_dirs)},
-        "display": {
+        if not isinstance(existing, Mapping):
+            raise WorkbenchError(f"Project configuration root must be a mapping: {path}")
+        data = dict(existing)
+
+    try:
+        current_version = int(data.get("version", 0) or 0)
+    except (TypeError, ValueError):
+        current_version = 0
+    data["version"] = max(current_version, 9)
+    data["scan"] = {"exclude_dirs": sorted(excluded_dirs)}
+
+    existing_display = data.get("display", {}) or {}
+    display: dict[str, Any] = (
+        dict(existing_display) if isinstance(existing_display, Mapping) else {}
+    )
+    display.update(
+        {
             "show_whitespace": not bool(hide_whitespace),
             "hide_mapping_order": bool(hide_mapping_order),
             "mute_non_focused": bool(mute_non_focused),
-        },
-        "patterns": [],
-    }
-    if existing_paths is not None:
-        data["paths"] = dict(existing_paths)
+        }
+    )
+    data["display"] = display
+    data["patterns"] = []
     raw_patterns: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     category_rank = {name: index for index, name in enumerate(CATEGORY_ORDER)}
@@ -3284,7 +3297,7 @@ def _inferred_project_pattern_rules(
             dev_regex=dev_regex,
             files=(),
             category=category,
-            enabled=False,
+            enabled=True,
             kind=kind,
             source="suggested",
         )

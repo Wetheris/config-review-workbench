@@ -140,10 +140,10 @@ def run_regression_tests() -> int:
             target = root / "test"
             source.mkdir()
             target.mkdir()
-            (source / "a.yaml").write_text("key: dev\n", encoding="utf-8")
-            (target / "a.yaml").write_text("key: test\n", encoding="utf-8")
-            (source / "crlf.yaml").write_text("key: dev\n", encoding="utf-8")
-            (target / "crlf.yaml").write_bytes(b"key: test\r\n")
+            (source / "a.yaml").write_text("key: incoming-one\n", encoding="utf-8")
+            (target / "a.yaml").write_text("key: current-one\n", encoding="utf-8")
+            (source / "crlf.yaml").write_text("other: incoming-two\n", encoding="utf-8")
+            (target / "crlf.yaml").write_bytes(b"other: current-two\r\n")
             settings = AppSettings(
                 source=source,
                 target=target,
@@ -165,12 +165,12 @@ def run_regression_tests() -> int:
                 accepted, message = workbench.accept_dev_block(record, blocks[0])
                 assert accepted, message
                 assert record.undo_snapshot_captured
-                assert record.initial_test_bytes == b"key: test\n"
-                assert (target / "a.yaml").read_bytes() == b"key: dev\n"
+                assert record.initial_test_bytes == b"key: current-one\n"
+                assert (target / "a.yaml").read_bytes() == b"key: incoming-one\n"
                 changed, undo_message, confirmation = workbench.undo_session_changes(record)
                 assert changed, undo_message
                 assert not confirmation
-                assert (target / "a.yaml").read_bytes() == b"key: test\n"
+                assert (target / "a.yaml").read_bytes() == b"key: current-one\n"
 
             check(
                 "undo bytes are captured lazily and restore exact startup content",
@@ -217,7 +217,7 @@ def run_regression_tests() -> int:
                 block = workbench.active_change_blocks(record)[0]
                 accepted, message = workbench.accept_dev_block(record, block)
                 assert accepted, message
-                assert (target / "crlf.yaml").read_bytes() == b"key: dev\r\n"
+                assert (target / "crlf.yaml").read_bytes() == b"other: incoming-two\r\n"
 
             check("accepted DEV lines use the TEST newline style", test_crlf_replacement)
 

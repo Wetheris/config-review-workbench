@@ -313,7 +313,7 @@ def plain_pattern_manager(workbench: Workbench) -> None:
         print(f"Scanned {len(workbench.records)} changed file(s); patterns apply project-wide.")
         print(
             color(
-                "Suggestions are visible by default. Nothing is hidden until you enable it.",
+                "Noise suggestions are hidden by default. Full Diff always remains literal.",
                 "yellow",
             )
         )

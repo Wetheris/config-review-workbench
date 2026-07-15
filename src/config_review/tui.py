@@ -90,7 +90,14 @@ def _category_state(candidates: Sequence[PatternCandidate]) -> str:
 def build_pattern_manager_rows(
     candidates: Sequence[PatternCandidate],
     protected: Sequence[ProtectedChangeSummary],
+    expanded_categories: set[str] | None = None,
 ) -> list[PatternManagerRow]:
+    """Build a compact category-first pattern list.
+
+    Categories start collapsed so the manager works as an at-a-glance summary.
+    Expansion is UI-only; hide/show choices remain persisted in project config.
+    """
+    expanded = expanded_categories or set()
     rows: list[PatternManagerRow] = []
     for category in CATEGORY_ORDER:
         members = _category_members(candidates, category)
@@ -108,15 +115,16 @@ def build_pattern_manager_rows(
                 category=category,
             )
         )
-        rows.extend(
-            PatternManagerRow(
-                kind="pattern",
-                label=candidate.rule.name,
-                category=category,
-                candidate=candidate,
+        if category in expanded:
+            rows.extend(
+                PatternManagerRow(
+                    kind="pattern",
+                    label=candidate.rule.name,
+                    category=category,
+                    candidate=candidate,
+                )
+                for candidate in members
             )
-            for candidate in members
-        )
 
     if protected:
         total_changes = sum(item.match_count for item in protected)
@@ -127,15 +135,16 @@ def build_pattern_manager_rows(
                 category=CATEGORY_ALWAYS_REVIEWED,
             )
         )
-        rows.extend(
-            PatternManagerRow(
-                kind="protected",
-                label=item.name,
-                category=CATEGORY_ALWAYS_REVIEWED,
-                protected=item,
+        if CATEGORY_ALWAYS_REVIEWED in expanded:
+            rows.extend(
+                PatternManagerRow(
+                    kind="protected",
+                    label=item.name,
+                    category=CATEGORY_ALWAYS_REVIEWED,
+                    protected=item,
+                )
+                for item in protected
             )
-            for item in protected
-        )
     return rows
 
 
@@ -1494,10 +1503,11 @@ class Tui:
     def pattern_manager_screen(self, stdscr: Any) -> None:
         selected = 0
         scroll = 0
+        expanded_categories: set[str] = set()
         while True:
             candidates = self.workbench.pattern_candidates()
             protected = self.workbench.protected_summaries()
-            rows = build_pattern_manager_rows(candidates, protected)
+            rows = build_pattern_manager_rows(candidates, protected, expanded_categories)
             if rows:
                 selected = max(0, min(selected, len(rows) - 1))
             else:
@@ -1522,7 +1532,7 @@ class Tui:
                 stdscr,
                 2,
                 2,
-                "Nothing is hidden until enabled here; Full Diff always shows everything.",
+                "New noise suggestions start hidden. Expand a category to audit or show individual rules.",
                 self._color_pair(3),
             )
             self._add(
@@ -1567,7 +1577,8 @@ class Tui:
                     self._add(stdscr, y, 14, f"{match_count:<8}", attr)
                     self._add(stdscr, y, 24, f"{file_count:<6}", attr)
                     self._add(stdscr, y, 32, f"{overlap or '—':<8}", attr)
-                    self._add(stdscr, y, 42, item.label.upper(), attr)
+                    marker = "▾" if item.category in expanded_categories else "▸"
+                    self._add(stdscr, y, 42, f"{marker} {item.label.upper()}", attr)
                     continue
 
                 if item.kind == "pattern" and item.candidate is not None:
@@ -1592,7 +1603,8 @@ class Tui:
                 if item.kind == "protected_category":
                     attr = selected_attr | curses.A_BOLD | self._color_pair(1)
                     self._add(stdscr, y, 2, f"{'LOCKED':<10}", attr)
-                    self._add(stdscr, y, 42, item.label.upper(), attr)
+                    marker = "▾" if item.category in expanded_categories else "▸"
+                    self._add(stdscr, y, 42, f"{marker} {item.label.upper()}", attr)
                     continue
 
                 if item.kind == "protected" and item.protected is not None:
@@ -1617,7 +1629,7 @@ class Tui:
                 stdscr,
                 height - 3,
                 1,
-                "Navigate: [↑/↓]select  [Enter]preview  [Space]toggle pattern/category",
+                "Navigate: [↑/↓]select  [Enter]expand/preview  [Space]hide/show",
             )
             self._draw_footer(
                 stdscr,
@@ -1641,8 +1653,13 @@ class Tui:
                     self.pattern_preview_screen(stdscr, item.candidate.rule.id)
                 elif item.kind == "protected" and item.protected is not None:
                     self.protected_preview_screen(stdscr, item.protected.name)
-                elif item.kind == "category":
-                    self.status = "Use Space to hide/show every pattern in this category."
+                elif item.kind in {"category", "protected_category"}:
+                    if item.category in expanded_categories:
+                        expanded_categories.remove(item.category)
+                        self.status = f"Collapsed {item.category}."
+                    else:
+                        expanded_categories.add(item.category)
+                        self.status = f"Expanded {item.category}."
                 else:
                     self.status = "Always-reviewed changes remain visible in Focused Diff."
             elif key == ord(" ") and rows:
@@ -2436,26 +2453,66 @@ class Tui:
 
     def configure_screen(self, stdscr: Any) -> None:
         items = [
-            ("Comparison paths", "Change the project root or exact DEV/TEST directories"),
-            ("Pattern filters", "Review project-wide environment/noise filters"),
-            ("Display filters", "Whitespace, YAML order, and focused contrast"),
-            ("Edit project config", "Open .config-review.yaml in the configured editor"),
-            ("Rescan", "Refresh the current DEV and TEST directories"),
-            ("Back", "Return to the main file list"),
+            (
+                "COMPARISON",
+                "Comparison paths",
+                "Change the project root or enter exact DEV and TEST directories.",
+            ),
+            (
+                "FILTERING",
+                "Pattern filters",
+                "Review auto-hidden project-wide environment and noise patterns.",
+            ),
+            (
+                "FILTERING",
+                "Display filters",
+                "Control whitespace, safe YAML order noise, and focused contrast.",
+            ),
+            (
+                "PROJECT",
+                "Edit project config",
+                "Open the local .config-review.yaml file in the configured editor.",
+            ),
+            (
+                "PROJECT",
+                "Rescan",
+                "Refresh the current DEV and TEST directories without changing settings.",
+            ),
+            ("NAVIGATION", "Back", "Return to the main file list."),
         ]
         selected = 0
         while True:
             stdscr.erase()
             height, width = stdscr.getmaxyx()
-            self._add(stdscr, 1, 2, "CONFIGURE", curses.A_BOLD | self._color_pair(5))
-            self._add(stdscr, 3, 2, f"DEV:  {self.workbench.settings.source}")
-            self._add(stdscr, 4, 2, f"TEST: {self.workbench.settings.target}")
-            for index, (label, description) in enumerate(items):
-                y = 7 + index * 2
-                attr = curses.A_REVERSE if index == selected else 0
-                self._add(stdscr, y, 2, f"  {label}", attr | curses.A_BOLD)
-                if width >= 58:
-                    self._add(stdscr, y + 1, 4, description, attr)
+            self._add(stdscr, 0, 2, "CONFIGURE", curses.A_BOLD | self._color_pair(5))
+            self._add(stdscr, 2, 2, "CURRENT COMPARISON", curses.A_BOLD | self._color_pair(4))
+            self._add(stdscr, 3, 4, f"DEV   {self.workbench.settings.source}")
+            self._add(stdscr, 4, 4, f"TEST  {self.workbench.settings.target}")
+            self._add(stdscr, 5, 2, "─" * max(1, width - 4), self._color_pair(4))
+
+            y = 7
+            previous_section = ""
+            for index, (section, label, description) in enumerate(items):
+                if section != previous_section:
+                    self._add(
+                        stdscr,
+                        y,
+                        2,
+                        section,
+                        curses.A_BOLD | self._color_pair(5),
+                    )
+                    y += 1
+                    previous_section = section
+                marker = "▶" if index == selected else " "
+                attr = curses.A_REVERSE | curses.A_BOLD if index == selected else curses.A_BOLD
+                self._add(stdscr, y, 4, f"{marker} {label}", attr)
+                if width >= 82:
+                    self._add(stdscr, y, 30, description, curses.A_DIM)
+                y += 1
+
+            if width < 82 and height - 3 > y:
+                self._add(stdscr, height - 3, 4, items[selected][2], curses.A_DIM)
+
             self._draw_footer(
                 stdscr,
                 height - 1,
@@ -2528,10 +2585,10 @@ class Tui:
             "equivalence, safety, priority, or whether a change should be promoted.",
             "",
             "Focused Diff",
-            "  Collapses blocks matched by project patterns you explicitly enabled.",
+            "  Collapses qualifying project noise by default; saved choices override it.",
             "  Press f for Display Filters: whitespace, YAML order, and focused contrast.",
-            "  Mapping order only hides exact scalar entries under the same parsed parent mapping.",
-            "  YAML lists, templates, invalid YAML, and ambiguous moves remain visible.",
+            "  YAML order filtering hides safe scalar mapping moves and unique name-keyed list moves.",
+            "  Changed named items, templates, invalid YAML, and ambiguous moves remain visible.",
             "  Collapsed blocks remain visible as one filtered marker line.",
             "  Mute non-focused diff content softens surrounding/expanded filtered content only.",
             "  Press h to expand/collapse hidden blocks.",

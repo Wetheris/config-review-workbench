@@ -79,7 +79,7 @@ class Workbench:
         self.patterns: list[PatternRule] = []
         self.excluded_dirs: set[str] = set(DEFAULT_EXCLUDED_DIRS)
         self.hide_whitespace = True
-        self.hide_mapping_order = False
+        self.hide_mapping_order = True
         self.mute_non_focused = False
         self.config_diagnostics: list[str] = []
         self.records: list[FileRecord] = []
@@ -92,7 +92,14 @@ class Workbench:
 
     @property
     def enabled_patterns(self) -> list[PatternRule]:
-        return [rule for rule in self.patterns if rule.enabled]
+        # Newly discovered noise suggestions are hidden by default for the
+        # quick-review workflow. A saved disabled rule is an explicit user
+        # choice and overrides the generated default on later runs.
+        return [
+            candidate.rule
+            for candidate in self.pattern_candidates()
+            if candidate.rule.enabled and candidate.match_count > 0
+        ]
 
     @property
     def review_filter_signature(self) -> str:
@@ -549,8 +556,9 @@ class Workbench:
         for candidate in candidates:
             rule = by_id.get(candidate.rule.id)
             if rule is None:
-                if not enabled:
-                    continue
+                # Persist both hidden and visible choices. Generated suggestions
+                # start hidden, so a saved disabled rule is how a reviewer says
+                # that one should remain visible on future runs.
                 rule = PatternRule(
                     id=candidate.rule.id,
                     name=candidate.rule.name,
@@ -558,7 +566,7 @@ class Workbench:
                     dev_regex=candidate.rule.dev_regex,
                     files=(),
                     category=candidate.rule.category,
-                    enabled=True,
+                    enabled=enabled,
                     kind=candidate.rule.kind,
                     source=str(self.settings.config_file),
                 )

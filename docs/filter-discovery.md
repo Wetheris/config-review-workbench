@@ -3,9 +3,10 @@
 This document describes how Config Review Workbench discovers **candidate project
 patterns** from repeated TEST/current to DEV/incoming replacements.
 
-The discovery system is intentionally conservative. It produces suggestions for a
-person to review; it does not decide that two values are equivalent, enable a rule,
-or hide a change automatically.
+The discovery system is intentionally conservative about what may become a
+suggestion. For the quick-review workflow, qualifying suggestions start enabled and
+hidden in Focused Diff, while Full Diff remains literal. A reviewer can show and save
+any rule that is not appropriate noise for the project.
 
 ## Design goals
 
@@ -39,7 +40,8 @@ The Pattern Manager follows this sequence:
 8. Merge generated candidates with patterns already saved in
    `.config-review.yaml`.
 9. Calculate examples, affected files, duplicate coverage, and overlap counts.
-10. Present every new suggestion as `VISIBLE` until the user explicitly enables it.
+10. Present new suggestions as `HIDDEN` by default, grouped into collapsed category
+    summaries. Saved user choices override this generated default.
 
 The primary implementation entry point is
 `discover_project_pattern_candidates()` in `src/config_review/core.py`.
@@ -374,20 +376,20 @@ Each example includes:
 
 Examples are for human validation and do not participate in matching.
 
-## 13. Enabling and persistence
+## 13. Defaults and persistence
 
-Every new suggestion starts with:
+Every qualifying new suggestion starts with:
 
 ```text
-STATE = VISIBLE
-enabled = false
+STATE = HIDDEN
+enabled = true
+source = suggested
 ```
 
-Nothing is hidden until the user enables a pattern in the Pattern Manager or edits
-the project configuration deliberately.
-
-Enabled and disabled rules are saved under `patterns:` in `.config-review.yaml` with
-their names, regex pairs, categories, kinds, and enabled state.
+This generated default is not automatically written to `.config-review.yaml`. When a
+reviewer changes a rule, the explicit hidden or visible choice is saved under
+`patterns:` with its name, regex pair, category, kind, and enabled state. A saved
+choice overrides the generated default on later runs.
 
 Pattern filtering affects Focused Diff only. Full Diff always renders the complete
 literal text comparison.
@@ -428,8 +430,9 @@ itself.
 - Generated patterns are project-wide; path-specific automatic rules are not
   currently produced.
 
-These limitations are why suggestions remain visible until explicitly enabled and
-why Full Diff is always available.
+These limitations are why the compact Pattern Manager makes every generated rule
+auditable, why reviewers can save a visible override, and why Full Diff is always
+available.
 
 ## Relevant implementation points
 
