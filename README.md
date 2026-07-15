@@ -42,6 +42,13 @@ shown in red, while DEV/incoming values are shown in green.
 
 ![Focused Diff](docs/images/focused-diff.png)
 
+### Pattern Manager
+
+Press `p` from the main file list to inspect repeated project-wide replacements
+before deciding whether Focused Diff should collapse them.
+
+![Pattern Manager](docs/images/pattern-manager.png)
+
 ### Filtered differences
 
 Filtered changes are still real differences. Focused Diff may collapse them after a
@@ -175,30 +182,74 @@ why it is hidden.
 **Full Diff** never hides anything. It is the authoritative view when you need to
 inspect the exact TEST/current and DEV/incoming text.
 
-## Patterns and display filters
+## Pattern Manager
 
-Pattern discovery can suggest repeated project-wide replacements such as:
+Press `p` from the main file list to open the Pattern Manager. It scans the current
+set of changed files for repeated TEST/current → DEV/incoming replacements and
+groups suggestions into categories such as environment identity, application
+domains, endpoints, user references, and storage identifiers.
 
-- Environment names
-- Application domains and hostnames
-- Endpoints and URLs
-- User or service references
-- Storage and data identifiers
+Pattern suggestions are **visible by default**. Discovery alone never hides a
+change.
 
-Suggestions do not hide anything until the user enables them.
+### Understanding the columns
 
-Always-reviewed guards keep important changes visible, including versions, image
-tags, revisions, replica counts, resources, security settings, additions, removals,
-and structural changes.
+| Column | Meaning |
+|---|---|
+| `STATE` | `VISIBLE` means matching changes remain expanded in Focused Diff. `HIDDEN` means the rule is enabled and matching changes are collapsed. `LOCKED` identifies always-reviewed changes that patterns cannot hide. |
+| `MATCHES` | Number of changed blocks matched by the pattern or category. |
+| `FILES` | Number of unique files containing those matches. |
+| `OVERLAP` | Number of matched blocks also covered by another suggested or saved pattern. |
+| `CATEGORY / PATTERN` | The pattern group and the individual replacement rule. |
 
-Display Filters include:
+A hidden change is not removed, accepted, or marked complete. It is only collapsed
+in Focused Diff with a `FILTERED DIFF (HIDDEN)` marker and a brief reason. Full Diff
+always shows the original TEST and DEV lines.
+
+### Reviewing and enabling patterns
+
+- Use `↑` / `↓` or `j` / `k` to select a row.
+- Press `Enter` on a pattern to preview its regexes and matching examples with nearby
+  context.
+- Press `Space` on an individual pattern to toggle it.
+- Press `Space` on a category to toggle every pattern in that category.
+- Press `f` to open Display Filters.
+- Press `x` to inspect or edit `.config-review.yaml`.
+
+Review a pattern's examples before enabling it. Suggested patterns are regex-based
+evidence of a repeated replacement, not proof that the two values are semantically
+equivalent. Broad hostname or endpoint suggestions deserve particular scrutiny.
+
+When a changed block matches several patterns, `OVERLAP` reports that relationship.
+The block remains hidden while **any** enabled matching pattern still applies. All
+matching reasons remain available in Filter Details.
+
+Enabled project patterns are saved in `.config-review.yaml` and apply across the
+whole project on later runs.
+
+### Always-reviewed changes
+
+Pattern rules cannot hide protected changes such as:
+
+- Versions, image tags, chart versions, and revisions
+- Replica counts and CPU or memory resources
+- Security-related settings
+- Additions and removals
+- Structural changes
+
+These rows appear as `LOCKED` or remain `VISIBLE`, even when nearby environment
+differences are filtered.
+
+## Display Filters
+
+Display Filters are separate from project patterns:
 
 - Show or hide whitespace-only changes
 - Hide safe YAML mapping-order-only changes
 - Mute non-focused diff content
 
-These filters affect Focused Diff only. Full Diff remains unchanged.
-
+Display Filters change how Focused Diff is presented. Full Diff remains completely
+unfiltered.
 ## Applying changes safely
 
 Accept DEV revalidates the selected hunk immediately before writing. If the current
