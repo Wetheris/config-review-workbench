@@ -753,7 +753,6 @@ def _render_text_diff(
 
         for tag, i1, i2, j1, j2 in group:
             old_block = old_lines[i1:i2]
-            new_block = new_lines[j1:j2]
 
             if tag == "equal":
                 for offset, value in enumerate(old_block):

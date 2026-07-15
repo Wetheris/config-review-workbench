@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent
 COPY_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
 SOURCE = ROOT / "src" / "config_review"
 DEFAULT_OUTPUT = ROOT / "dist" / "config-review.pyz"
+NOTICE_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
 
 
 def vendor_ruamel(staging: Path) -> None:
@@ -44,6 +45,11 @@ def build(output: Path, *, include_ruamel: bool = True) -> Path:
             "from config_review.cli import main\nraise SystemExit(main())\n",
             encoding="utf-8",
         )
+        for name in NOTICE_FILES:
+            notice = ROOT / name
+            if not notice.is_file():
+                raise RuntimeError(f"Required distribution notice is missing: {name}")
+            shutil.copy2(notice, staging / name)
         if include_ruamel:
             vendor_ruamel(staging)
         zipapp.create_archive(

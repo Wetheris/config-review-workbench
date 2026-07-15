@@ -327,6 +327,14 @@ PYTHONPATH=src python3 -m config_review \
 The source is modular for development and testing, while releases remain a single
 portable executable archive.
 
+## License
+
+Config Review Workbench is available under the MIT License. See [LICENSE](LICENSE).
+
+The portable `.pyz` bundles `ruamel.yaml`. Its copyright and license terms are
+included in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and inside the built
+archive.
+
 ## Known limitations
 
 - Python 3.10 or newer is required.

@@ -150,8 +150,7 @@ an environment signal when either:
 The built-in vocabulary currently includes:
 
 ```text
-dev, deve, devw, development, test, test-ocp, test-ms,
-sys-test, stage, staging, prod, production
+dev, development, test, stage, staging, prod, production
 ```
 
 Environment-fragment patterns intentionally span YAML keys. This allows one

@@ -2736,13 +2736,8 @@ def _looks_like_environment_substitution(
 
     environment_words = {
         "dev",
-        "deve",
-        "devw",
         "development",
         "test",
-        "test-ocp",
-        "test-ms",
-        "sys-test",
         "stage",
         "staging",
         "prod",

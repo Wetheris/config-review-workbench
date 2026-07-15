@@ -93,7 +93,7 @@ def test_single_discovered_pair_requires_confirmation(tmp_path: Path, monkeypatc
 
 
 def test_manual_setup_asks_for_only_project_directory(tmp_path: Path, monkeypatch):
-    project = tmp_path / "deployment-configurations" / "eids"
+    project = tmp_path / "configuration-project"
     source = project / "dev"
     target = project / "test"
     source.mkdir(parents=True)
@@ -102,9 +102,7 @@ def test_manual_setup_asks_for_only_project_directory(tmp_path: Path, monkeypatc
     tool_root.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "discover_nearby_dev_test_pairs", lambda _base: [])
-    monkeypatch.setattr(
-        cli, "_directory_input", lambda _prompt="": "deployment-configurations/eids"
-    )
+    monkeypatch.setattr(cli, "_directory_input", lambda _prompt="": "configuration-project")
     answers = iter(["yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
@@ -112,14 +110,14 @@ def test_manual_setup_asks_for_only_project_directory(tmp_path: Path, monkeypatc
 
 
 def test_pasting_dev_directory_uses_parent_project(tmp_path: Path, monkeypatch, capsys):
-    project = tmp_path / "eids"
+    project = tmp_path / "configuration-project"
     source = project / "dev"
     target = project / "test"
     source.mkdir(parents=True)
     target.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "discover_nearby_dev_test_pairs", lambda _base: [])
-    monkeypatch.setattr(cli, "_directory_input", lambda _prompt="": "eids/dev")
+    monkeypatch.setattr(cli, "_directory_input", lambda _prompt="": "configuration-project/dev")
     answers = iter(["yes"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
