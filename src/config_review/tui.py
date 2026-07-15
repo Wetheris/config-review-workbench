@@ -2320,6 +2320,7 @@ class Tui:
         include_context_labels = True
         include_git_context = True
         selected = 0
+        notice = ""
         while True:
             presentation = self.workbench._report_presentation(record, mode)
             view_name = "Full Diff" if mode == "full" else "Focused Diff"
@@ -2375,6 +2376,13 @@ class Tui:
                 self._add(stdscr, y, 4, f"{marker} {label}", attr)
                 if width >= 80:
                     self._add(stdscr, y + 1, 8, description, curses.A_DIM)
+            if notice:
+                notice_attr = (
+                    self._color_pair(1) | curses.A_BOLD
+                    if notice.startswith("Could not")
+                    else self._color_pair(2) | curses.A_BOLD
+                )
+                self._add(stdscr, height - 2, 2, notice, notice_attr)
             self._draw_footer(
                 stdscr,
                 height - 1,
@@ -2412,6 +2420,7 @@ class Tui:
                     include_context_labels=include_context_labels,
                     include_git_context=include_git_context,
                 )
+                notice = self.status
             elif kind == "save":
                 try:
                     path = self.workbench.save_file_report(
@@ -2420,9 +2429,15 @@ class Tui:
                         include_context_labels=include_context_labels,
                         include_git_context=include_git_context,
                     )
-                    self.status = f"Saved visible-diff report to {path}."
+                    try:
+                        display_path = path.relative_to(self.workbench.settings.config_file.parent)
+                    except ValueError:
+                        display_path = path
+                    notice = f"Saved report: {display_path}"
+                    self.status = notice
                 except (OSError, WorkbenchError) as exc:
-                    self.status = f"Could not save report: {exc}"
+                    notice = f"Could not save report: {exc}"
+                    self.status = notice
             elif kind == "print":
                 self._print_report(
                     stdscr,
@@ -2431,6 +2446,7 @@ class Tui:
                     include_context_labels=include_context_labels,
                     include_git_context=include_git_context,
                 )
+                notice = self.status
             else:
                 return
 

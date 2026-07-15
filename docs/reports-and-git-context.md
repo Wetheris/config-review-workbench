@@ -18,9 +18,11 @@ than a second diff engine. Hidden differences remain available in Full Diff but 
 silently added to a Focused Diff report.
 
 Reports are Markdown files saved under the visible `reports/` directory. That directory is
-ignored by Git. The same report can be opened in the configured editor or printed to
-the terminal. If the current view has zero selectable differences, the report menu is
-blocked and no empty report or report directory is created.
+ignored by Git. After saving, the report menu immediately confirms the project-relative
+path so the reviewer knows exactly where the file was written. The same report can be
+opened in the configured editor or printed to the terminal. If the current view has zero
+selectable differences, the report menu is blocked and no empty report or report
+directory is created.
 
 Older builds used `.config-review-reports/`. Existing files there are left alone and the
 old directory remains ignored, but newly generated reports use `reports/` so reviewers

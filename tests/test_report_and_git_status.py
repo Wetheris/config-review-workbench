@@ -205,6 +205,7 @@ class _FakeScreen:
         self.keys = iter(keys)
         self.height = height
         self.width = width
+        self.writes: list[str] = []
 
     def erase(self) -> None:
         pass
@@ -219,7 +220,30 @@ class _FakeScreen:
         return next(self.keys)
 
     def addnstr(self, *_args) -> None:
-        pass
+        if len(_args) >= 3:
+            self.writes.append(str(_args[2]))
+
+
+def test_save_report_shows_immediate_path_feedback(tmp_path: Path, monkeypatch):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.yaml").write_text("key: dev\n", encoding="utf-8")
+    (target / "values.yaml").write_text("key: test\n", encoding="utf-8")
+
+    workbench = Workbench(_settings(root))
+    tui = Tui(workbench)
+    monkeypatch.setattr(tui, "_color_pair", lambda _number: 0)
+    screen = _FakeScreen([ord("j"), ord("j"), ord("j"), curses.KEY_ENTER, ord("b")])
+
+    tui.report_options_screen(screen, workbench.records[0], mode="focused")
+
+    reports = list((root / "reports").glob("*.md"))
+    assert len(reports) == 1
+    assert any("Saved report: reports/" in write for write in screen.writes)
+    assert tui.status.startswith("Saved report: reports/")
 
 
 def test_detail_scrolling_reuses_cached_file_and_presentation(tmp_path: Path, monkeypatch):
