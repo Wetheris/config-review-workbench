@@ -1,29 +1,32 @@
 # Security and Code Quality Checks
 
-The project now has the same basic checks locally, before a commit, and in GitLab CI.
+The project uses the same core checks locally, before a commit, and in GitHub Actions.
+The goal is to catch simple mistakes quickly while keeping the release package verified
+against the source that produced it.
 
 ## What runs
 
-| Check | Purpose | Initial pipeline behavior |
+| Check | Purpose | GitHub behavior |
 |---|---|---|
 | Python compilation | Catches syntax errors before execution | Blocks |
 | Ruff lint | Catches undefined names, unused imports, and common correctness errors | Blocks |
-| Ruff format check | Reports inconsistent formatting | Warning |
-| pytest | Catches behavioral regressions in the source modules | Blocks |
-| Application `--self-test` | Validates the source app and built `.pyz` as complete executables | Run by `make self-test` / `make build` |
-| Bandit | Finds common Python security mistakes | Warning |
-| pip-audit | Checks runtime and build dependencies for known vulnerabilities | Warning |
-| GitLab SAST | Performs GitLab's source security analysis | Reported by GitLab |
-| GitLab Secret Detection | Detects committed credentials and private keys | Reported by GitLab |
+| Ruff format check | Prevents unformatted Python from being merged | Blocks |
+| pytest | Catches behavioral regressions in the source modules | Blocks on Python 3.10, 3.11, and 3.12 |
+| Application `--self-test` | Exercises integrated source behavior | Blocks package creation |
+| Packaged `.pyz` self-test | Verifies the distributed artifact starts and behaves correctly | Blocks |
+| Bandit | Finds common Python security mistakes | Blocks on medium/high findings |
+| pip-audit | Checks declared build/runtime dependencies for known vulnerabilities | Blocks |
+| CodeQL | Performs GitHub-native static security analysis | Reported under **Security and quality** |
+| GitHub secret scanning | Detects committed credentials and private keys | Configured in repository settings |
+| Dependabot | Opens dependency and GitHub Actions update pull requests | Runs weekly |
 
-The format and Python security jobs intentionally begin with `allow_failure: true`.
-That prevents old formatting or existing findings from blocking every commit on day
-one. After the initial findings are fixed or deliberately documented, remove
-`allow_failure: true` from `ruff-format` and `python-security`.
+All CI checks are blocking because the current project passes them. If a check fails,
+fix or review the finding rather than making the job optional by default.
 
 ## Local setup
 
-From the project root. The project currently has no `requirements.txt`; the checks only require `requirements-dev.txt`:
+From the project root. The project currently has no `requirements.txt`; development and
+CI tools are installed from `requirements-dev.txt`:
 
 ```bash
 python3 -m venv .venv
@@ -96,33 +99,56 @@ pre-commit run --all-files
 The pre-commit configuration uses the tools installed in the active environment. This
 avoids downloading separate hook environments, which is helpful on restricted networks.
 
-## GitLab pipeline behavior
+## GitHub Actions behavior
 
-The pipeline runs for:
+The old `.gitlab-ci.yml` was removed because GitHub does not read GitLab pipeline files.
+GitHub discovers workflows under `.github/workflows/`.
 
-- normal branch commits;
-- merge requests;
-- tags.
+### CI workflow
 
-Once a branch has an open merge request, the workflow prefers the merge-request
-pipeline and suppresses the duplicate branch pipeline.
+`.github/workflows/ci.yml` runs on:
 
-Generated `build/` and `dist/` content is excluded from source analysis. The source
-files that create the `.pyz` remain scanned.
+- every push, including tags;
+- every pull request;
+- manual runs from the **Actions** tab.
 
-## One-time historic secret scan
+It creates separate jobs for quality, supported-Python tests, security, and package
+validation. The package job only runs after the other jobs pass. Repeated runs for the
+same branch cancel older in-progress CI runs so stale work does not waste runner time.
 
-Normal secret detection focuses on the commits relevant to the pipeline. Run one full
-history scan after first enabling the pipeline:
+Open the repository's **Actions** tab to see each run and its logs.
 
-1. Open **Build > Pipelines > New pipeline** in GitLab.
-2. Add the variable `SECRET_DETECTION_HISTORIC_SCAN` with value `true`.
-3. Run the pipeline.
-4. Review any findings before deciding whether a credential must be revoked or a
-   false positive needs an exception.
+### CodeQL workflow
 
-Do not enable the historic scan permanently; scanning the entire repository history on
-every commit is unnecessarily expensive.
+`.github/workflows/codeql.yml` replaces the GitLab SAST template. It scans Python on:
+
+- pushes to `main`;
+- pull requests targeting `main`;
+- a weekly schedule;
+- manual runs.
+
+Results appear under **Security and quality > Code scanning**. Do not also enable
+CodeQL default setup while this advanced workflow exists; use one setup method or the
+other.
+
+### Secret scanning
+
+Secret scanning is a GitHub repository security feature rather than a normal CI command.
+Check it under:
+
+1. **Settings**
+2. **Security and analysis** or **Advanced Security**
+3. Enable **Secret scanning** and **Push protection** when those options are available
+
+Secret scanning checks committed content and push protection can stop supported secrets
+before they are added to the repository.
+
+### Dependabot
+
+`.github/dependabot.yml` checks Python dependencies and GitHub Actions weekly. It opens
+pull requests instead of modifying `main` directly. Dependabot alerts should also be
+enabled under the repository's security settings so known vulnerable dependencies are
+reported under **Security and quality**.
 
 ## Handling findings
 

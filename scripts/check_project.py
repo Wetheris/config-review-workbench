@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the same quality, test, and security checks locally and in GitLab CI."""
+"""Run the same quality, test, and security checks locally and in GitHub Actions."""
 
 from __future__ import annotations
 
@@ -39,7 +39,10 @@ def run(command: Sequence[str], *, label: str) -> bool:
 def quality_checks() -> bool:
     paths = existing_paths(SOURCE_DIR_NAMES)
     if not paths:
-        print("ERROR: no source, scripts, or tests directories were found.", file=sys.stderr)
+        print(
+            "ERROR: no source, scripts, or tests directories were found.",
+            file=sys.stderr,
+        )
         return False
 
     ok = run(
@@ -53,7 +56,10 @@ def quality_checks() -> bool:
 def format_check() -> bool:
     paths = existing_paths(SOURCE_DIR_NAMES)
     if not paths:
-        print("ERROR: no source, scripts, or tests directories were found.", file=sys.stderr)
+        print(
+            "ERROR: no source, scripts, or tests directories were found.",
+            file=sys.stderr,
+        )
         return False
     return run(["ruff", "format", "--check", *paths], label="Ruff format check")
 
