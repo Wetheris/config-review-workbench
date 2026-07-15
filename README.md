@@ -24,31 +24,47 @@ default `build.py` settings. The target host only needs Python 3.10 or newer.
 
 ## First-run project setup
 
-The first normal launch looks beneath the repository root for sibling directories
-named `dev` and `test`. When one likely pair is found, the tool displays both
-paths and asks you to confirm them. If multiple pairs are found, you can select
-one; if no pair is found, the tool asks for the DEV/source and TEST/target
-directories relative to the repository or executable location.
+On the first normal launch, the tool searches nearby workspace directories for a
+project that contains sibling `dev` and `test` folders. It shows the project and
+environment paths and asks you to confirm them.
 
-Verified paths are stored relative to `.config-review.yaml`:
+When automatic discovery cannot find the project, the tool asks for only the
+**project directory** that contains `dev` and `test`:
+
+```text
+Enter the project directory that contains the DEV and TEST folders.
+Press Tab to complete paths. Relative paths start from your current directory:
+  /home/user/repos/config-review-workbench/dist
+Project directory: ../../../devops/deployment-configurations/eids/
+```
+
+Tab completion is available on terminals with Python `readline` support. You may
+also paste an absolute path. If you accidentally provide the `dev` or `test`
+directory itself, the tool detects the sibling environment and uses the parent
+project directory. Ctrl+C cancels setup cleanly.
+
+Verified paths are stored portably in `.config-review.yaml` as one project plus
+the environment directory names:
 
 ```yaml
 version: 8
 paths:
-  source: eids/dev
-  target: eids/test
+  project: ../../devops/deployment-configurations/eids
+  source: dev
+  target: test
 ```
 
-Later launches reuse these paths without prompting. Command-line paths override
-the saved values for that run. Supplying both paths on an unconfigured project
-also saves them automatically:
+Later launches reuse the saved project without prompting. Command-line paths
+override the saved values for that run. Supplying both paths on an unconfigured
+project also saves their common parent automatically:
 
 ```bash
-./config-review.pyz --source eids/dev --target eids/test
+./config-review.pyz --source /path/to/project/dev --target /path/to/project/test
 ```
 
-Non-interactive runs must provide both options or use a configuration file that
-already contains `paths.source` and `paths.target`.
+Older configurations containing independent `paths.source` and `paths.target`
+values remain supported. Non-interactive runs must use a configured project or
+provide both command-line options.
 
 ## Source layout
 

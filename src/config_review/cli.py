@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import fnmatch
+import glob
 import hashlib
 import json
 import os
@@ -50,8 +51,8 @@ from .core import (
     debug,
     find_git_root,
     init_project_config,
-    load_project_paths,
-    resolve_configured_path,
+    load_project_path_settings,
+    resolve_configured_project_paths,
     save_project_paths,
 )
 from .workbench import (
@@ -203,70 +204,185 @@ def discover_dev_test_pairs(base: Path, *, max_depth: int = 6) -> list[tuple[Pat
 
 def _relative_display(path: Path, base: Path) -> str:
     try:
-        text = path.resolve().relative_to(base.resolve()).as_posix()
+        text = Path(os.path.relpath(path.resolve(), base.resolve())).as_posix()
         return text or "."
     except ValueError:
         return str(path.resolve())
 
-def _prompt_existing_directory(label: str, base: Path) -> Path:
+
+def _directory_input(prompt: str) -> str:
+    """Read a directory path with best-effort shell-style Tab completion."""
+    try:
+        import readline
+    except ImportError:  # pragma: no cover - unavailable on some platforms
+        return input(prompt)
+
+    previous_completer = readline.get_completer()
+    previous_delimiters = readline.get_completer_delims()
+
+    def complete(text: str, state: int) -> str | None:
+        expanded = os.path.expanduser(text or "")
+        pattern = f"{expanded}*" if expanded else "*"
+        matches: list[str] = []
+        for match in sorted(glob.glob(pattern)):
+            candidate = Path(match)
+            if candidate.is_dir():
+                matches.append(match.rstrip(os.sep) + os.sep)
+        return matches[state] if state < len(matches) else None
+
+    try:
+        readline.set_completer(complete)
+        # Treat the full line as a path so completion also works with spaces.
+        readline.set_completer_delims("\t\n")
+        readline.parse_and_bind("tab: complete")
+        return input(prompt)
+    finally:
+        readline.set_completer(previous_completer)
+        readline.set_completer_delims(previous_delimiters)
+
+
+def _prompt_existing_project_directory() -> Path:
+    cwd = Path.cwd().resolve()
+    print("\nEnter the project directory that contains the DEV and TEST folders.")
+    print("Press Tab to complete paths. Relative paths start from your current directory:")
+    print(f"  {cwd}")
     while True:
-        raw = input(f"{label} directory, relative to {base}: ").strip()
+        raw = _directory_input("Project directory: ").strip()
         if not raw:
-            print("Please enter a directory path.")
+            print("Please enter a project directory.")
             continue
         candidate = Path(raw).expanduser()
         if not candidate.is_absolute():
-            candidate = base / candidate
+            candidate = cwd / candidate
         candidate = candidate.resolve()
         if candidate.is_dir():
             return candidate
         print(f"Directory not found: {candidate}")
 
-def _confirm_pair(source: Path, target: Path, base: Path) -> bool:
-    print("\nFound likely configuration directories:")
-    print(f"  DEV/source:  {_relative_display(source, base)}")
-    print(f"  TEST/target: {_relative_display(target, base)}")
-    answer = input("Use these directories? [Y/n]: ").strip().lower()
+
+def _direct_dev_test_pair(project: Path) -> tuple[Path, Path] | None:
+    """Return direct case-insensitive DEV/TEST children of a project directory."""
+    try:
+        children = {
+            child.name.lower(): child
+            for child in project.iterdir()
+            if child.is_dir() and not child.is_symlink()
+        }
+    except OSError:
+        return None
+    source = children.get("dev")
+    target = children.get("test")
+    if source is None or target is None:
+        return None
+    return source.resolve(), target.resolve()
+
+
+def _project_for_pair(source: Path, target: Path) -> Path:
+    return source.parent if source.parent == target.parent else Path(os.path.commonpath([source, target]))
+
+
+def _confirm_pair(source: Path, target: Path, display_base: Path) -> bool:
+    project = _project_for_pair(source, target)
+    print("\nFound configuration directories:")
+    print(f"  Project:     {_relative_display(project, display_base)}")
+    print(f"  DEV/source:  {_relative_display(source, display_base)}")
+    print(f"  TEST/target: {_relative_display(target, display_base)}")
+    answer = input("Use this project? [Y/n]: ").strip().lower()
     return answer in {"", "y", "yes"}
 
-def interactive_first_run_paths(base: Path) -> tuple[Path, Path]:
-    """Discover, confirm, or manually collect a source/target pair."""
-    pairs = discover_dev_test_pairs(base)
-    if len(pairs) == 1 and _confirm_pair(*pairs[0], base):
-        return pairs[0]
-    if len(pairs) > 1:
-        print("\nFound multiple DEV/TEST directory pairs:")
-        for index, (source, target) in enumerate(pairs, start=1):
-            print(
-                f"  {index}. DEV/source {_relative_display(source, base)}  |  "
-                f"TEST/target {_relative_display(target, base)}"
-            )
-        while True:
-            answer = input("Select a pair number, or M to enter paths manually: ").strip().lower()
-            if answer in {"m", "manual"}:
-                break
-            try:
-                selected = int(answer) - 1
-            except ValueError:
-                print("Enter a listed number or M.")
-                continue
-            if 0 <= selected < len(pairs):
-                source, target = pairs[selected]
-                if _confirm_pair(source, target, base):
-                    return source, target
-                break
-            print("That selection is outside the listed range.")
-    elif len(pairs) == 1:
-        print("Automatic discovery was declined. Enter the project directories manually.")
-    else:
-        print("\nNo sibling directories named dev and test were found automatically.")
 
-    source = _prompt_existing_directory("DEV/source", base)
-    target = _prompt_existing_directory("TEST/target", base)
-    print("\nUsing configuration directories:")
-    print(f"  DEV/source:  {_relative_display(source, base)}")
-    print(f"  TEST/target: {_relative_display(target, base)}")
-    return source, target
+def _select_pair(
+    pairs: Sequence[tuple[Path, Path]],
+    display_base: Path,
+    *,
+    allow_manual: bool,
+) -> tuple[Path, Path] | None:
+    if not pairs:
+        return None
+    if len(pairs) == 1:
+        return pairs[0] if _confirm_pair(*pairs[0], display_base) else None
+
+    print("\nFound multiple projects containing DEV and TEST:")
+    for index, (source, target) in enumerate(pairs, start=1):
+        project = _project_for_pair(source, target)
+        print(f"  {index}. {_relative_display(project, display_base)}")
+    manual_text = ", or M to choose a different directory" if allow_manual else ""
+    while True:
+        answer = input(f"Select a project number{manual_text}: ").strip().lower()
+        if allow_manual and answer in {"m", "manual"}:
+            return None
+        try:
+            selected = int(answer) - 1
+        except ValueError:
+            print("Enter one of the listed numbers" + (" or M." if allow_manual else "."))
+            continue
+        if 0 <= selected < len(pairs):
+            pair = pairs[selected]
+            return pair if _confirm_pair(*pair, display_base) else None
+        print("That selection is outside the listed range.")
+
+
+def discover_nearby_dev_test_pairs(base: Path) -> list[tuple[Path, Path]]:
+    """Search sensible nearby roots, including the parent workspace directory."""
+    cwd = Path.cwd().resolve()
+    candidates = [cwd, base.resolve(), base.resolve().parent]
+    roots: list[Path] = []
+    for candidate in candidates:
+        if candidate not in roots and candidate.is_dir():
+            roots.append(candidate)
+
+    found: set[tuple[Path, Path]] = set()
+    for root in roots:
+        for pair in discover_dev_test_pairs(root, max_depth=6):
+            found.add(pair)
+    return sorted(
+        found,
+        key=lambda pair: (
+            len(_project_for_pair(*pair).parts),
+            _project_for_pair(*pair).as_posix().lower(),
+        ),
+    )
+
+
+def _pairs_in_selected_project(project: Path) -> list[tuple[Path, Path]]:
+    # A pasted DEV or TEST directory is a common mistake; automatically use its
+    # parent when the sibling environment exists.
+    if project.name.lower() in {"dev", "test"}:
+        direct_parent_pair = _direct_dev_test_pair(project.parent)
+        if direct_parent_pair is not None:
+            project = project.parent
+            print(f"Using parent project directory: {project}")
+
+    direct = _direct_dev_test_pair(project)
+    if direct is not None:
+        return [direct]
+    return discover_dev_test_pairs(project, max_depth=5)
+
+
+def interactive_first_run_paths(base: Path) -> tuple[Path, Path]:
+    """Discover or collect one project directory, then derive DEV and TEST."""
+    display_base = Path.cwd().resolve()
+    discovered = discover_nearby_dev_test_pairs(base)
+    selected = _select_pair(discovered, display_base, allow_manual=True)
+    if selected is not None:
+        return selected
+
+    if discovered:
+        print("Choose the project directory manually.")
+    else:
+        print("\nNo nearby project containing both DEV and TEST was found automatically.")
+
+    while True:
+        project = _prompt_existing_project_directory()
+        pairs = _pairs_in_selected_project(project)
+        if not pairs:
+            print(f"\nNo sibling DEV and TEST directories were found under: {project}")
+            print("Choose the directory that contains them, not the DEV or TEST folder itself.")
+            continue
+        selected = _select_pair(pairs, display_base, allow_manual=True)
+        if selected is not None:
+            return selected
+        print("Choose a different project directory.")
 
 def resolve_project_paths(
     args: argparse.Namespace,
@@ -290,28 +406,30 @@ def resolve_project_paths(
             raise WorkbenchError(f"DEV/source directory does not exist: {source}")
         if not target.is_dir():
             raise WorkbenchError(f"TEST/target directory does not exist: {target}")
-        configured = load_project_paths(config_file)
-        newly_saved = not config_file.exists() or not all(configured)
+        configured = load_project_path_settings(config_file)
+        newly_saved = not config_file.exists() or not any(configured)
         if newly_saved:
             save_project_paths(config_file, source, target)
         return source, target, newly_saved
 
-    configured_source, configured_target = load_project_paths(config_file)
-    if configured_source and configured_target:
-        return (
-            resolve_configured_path(config_file, configured_source),
-            resolve_configured_path(config_file, configured_target),
-            False,
+    configured_project, configured_source, configured_target = load_project_path_settings(config_file)
+    if configured_project or (configured_source and configured_target):
+        source, target = resolve_configured_project_paths(
+            config_file,
+            configured_project,
+            configured_source,
+            configured_target,
         )
+        return source, target, False
     if configured_source or configured_target:
         raise WorkbenchError(
-            f"Both paths.source and paths.target are required in {config_file}."
+            f"Configure paths.project, or both paths.source and paths.target, in {config_file}."
         )
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise WorkbenchError(
-            "No project paths are configured and first-run setup requires an interactive "
-            "terminal. Run with --source and --target once, or add paths.source and "
-            f"paths.target to {config_file}."
+            "No project directory is configured and setup requires an interactive terminal. "
+            "Run with --source and --target once, or add paths.project to "
+            f"{config_file}."
         )
     source, target = interactive_first_run_paths(base)
     save_project_paths(config_file, source, target)
@@ -348,6 +466,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         source, target, newly_saved = resolve_project_paths(args, config_file, base)
+    except (KeyboardInterrupt, EOFError):
+        print("\nSetup cancelled.", file=sys.stderr)
+        return 130
     except WorkbenchError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -356,14 +477,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not source.is_dir():
         print(
             f"error: configured DEV/source directory does not exist: {source}\n"
-            f"Update paths.source in {config_file} or run with --source and --target.",
+            f"Update paths.project in {config_file} or run with --source and --target.",
             file=sys.stderr,
         )
         return 2
     if not target.is_dir():
         print(
             f"error: configured TEST/target directory does not exist: {target}\n"
-            f"Update paths.target in {config_file} or run with --source and --target.",
+            f"Update paths.project in {config_file} or run with --source and --target.",
             file=sys.stderr,
         )
         return 2

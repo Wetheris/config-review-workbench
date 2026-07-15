@@ -1240,28 +1240,35 @@ def _yaml_write(path: Path, data: Mapping[str, Any]) -> None:
             except OSError:
                 pass
 
-def load_project_paths(path: Path) -> tuple[str | None, str | None]:
-    """Load configured source and target directory strings without resolving them.
+def load_project_path_settings(path: Path) -> tuple[str | None, str | None, str | None]:
+    """Load the configured project, source, and target directory strings.
 
-    Stored paths are interpreted relative to the directory containing the project
-    configuration. Absolute paths remain supported for unusual deployments, but
-    first-run setup writes relative paths whenever possible.
+    New configurations store one project directory plus source/target names. Older
+    configurations that stored full source and target paths remain supported.
+    Values are returned without resolving them so callers can apply the correct
+    base directory semantics.
     """
     if not path.exists():
-        return None, None
+        return None, None, None
     root = _yaml_load(path) or {}
     if not isinstance(root, Mapping):
         raise WorkbenchError(f"Project configuration root must be a mapping: {path}")
     paths = root.get("paths", {}) or {}
     if not isinstance(paths, Mapping):
         raise WorkbenchError(f"'paths' must be a mapping in {path}")
-    raw_source = paths.get("source")
-    raw_target = paths.get("target")
-    source = str(raw_source).strip() if raw_source is not None else None
-    target = str(raw_target).strip() if raw_target is not None else None
-    source = source or None
-    target = target or None
+
+    def clean(value: Any) -> str | None:
+        result = str(value).strip() if value is not None else None
+        return result or None
+
+    return clean(paths.get("project")), clean(paths.get("source")), clean(paths.get("target"))
+
+
+def load_project_paths(path: Path) -> tuple[str | None, str | None]:
+    """Compatibility helper returning the configured source and target values."""
+    _project, source, target = load_project_path_settings(path)
     return source, target
+
 
 def resolve_configured_path(config_file: Path, value: str) -> Path:
     """Resolve one configured path relative to the project configuration."""
@@ -1269,6 +1276,36 @@ def resolve_configured_path(config_file: Path, value: str) -> Path:
     if not candidate.is_absolute():
         candidate = config_file.parent / candidate
     return candidate.resolve()
+
+
+def resolve_configured_project_paths(
+    config_file: Path,
+    project_value: str | None,
+    source_value: str | None,
+    target_value: str | None,
+) -> tuple[Path, Path]:
+    """Resolve new project-based or legacy independent source/target settings."""
+    if project_value:
+        project = resolve_configured_path(config_file, project_value)
+        source_name = source_value or "dev"
+        target_name = target_value or "test"
+        source = Path(source_name).expanduser()
+        target = Path(target_name).expanduser()
+        if not source.is_absolute():
+            source = project / source
+        if not target.is_absolute():
+            target = project / target
+        return source.resolve(), target.resolve()
+
+    if not source_value or not target_value:
+        raise WorkbenchError(
+            f"Configure paths.project, or both paths.source and paths.target, in {config_file}."
+        )
+    return (
+        resolve_configured_path(config_file, source_value),
+        resolve_configured_path(config_file, target_value),
+    )
+
 
 def _portable_config_path(config_file: Path, path: Path) -> str:
     """Return a stable path string relative to the project configuration."""
@@ -1279,6 +1316,7 @@ def _portable_config_path(config_file: Path, path: Path) -> str:
     except ValueError:
         # Different Windows drives cannot be represented with a relative path.
         return str(resolved)
+
 
 def _default_project_config_data() -> dict[str, Any]:
     return {
@@ -1292,8 +1330,14 @@ def _default_project_config_data() -> dict[str, Any]:
         "patterns": [],
     }
 
+
 def save_project_paths(path: Path, source: Path, target: Path) -> None:
-    """Merge verified source/target directories into the project configuration."""
+    """Merge verified source/target directories into the project configuration.
+
+    Sibling source and target directories are stored as one portable project path
+    plus their directory names. Unusual non-sibling layouts retain the legacy
+    independent path representation.
+    """
     if path.exists():
         root = _yaml_load(path) or {}
         if not isinstance(root, Mapping):
@@ -1306,10 +1350,20 @@ def save_project_paths(path: Path, source: Path, target: Path) -> None:
     except (TypeError, ValueError):
         current_version = 0
     data["version"] = max(current_version, 8)
-    data["paths"] = {
-        "source": _portable_config_path(path, source),
-        "target": _portable_config_path(path, target),
-    }
+
+    source = source.expanduser().resolve()
+    target = target.expanduser().resolve()
+    if source.parent == target.parent:
+        data["paths"] = {
+            "project": _portable_config_path(path, source.parent),
+            "source": source.name,
+            "target": target.name,
+        }
+    else:
+        data["paths"] = {
+            "source": _portable_config_path(path, source),
+            "target": _portable_config_path(path, target),
+        }
     data.setdefault("scan", {"exclude_dirs": sorted(DEFAULT_EXCLUDED_DIRS)})
     data.setdefault(
         "display",
