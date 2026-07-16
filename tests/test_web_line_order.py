@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from config_review.core import AppSettings, compute_filter_result
 from config_review.web_view import _build_web_diff_snapshot, build_web_diff_snapshot
 from config_review.workbench import Workbench
@@ -33,6 +35,31 @@ deployment:
     - name: SPRING_APPLICATION_NAME
       value: "dnc-cutover-service"
 """
+
+MISPLACED_LEADING_CONTEXT_TEST_YAML = """\
+env:
+  - name: A
+    value: "a"
+  - name: B
+    value: "old"
+  - name: C
+    value: "c"
+  - name: D
+    value: "d"
+"""
+
+MISPLACED_LEADING_CONTEXT_DEV_YAML = """\
+env:
+  - name: A
+    value: "a"
+  - name: B
+    value: "new"
+  - name: D
+    value: "d"
+  - name: C
+    value: "c"
+"""
+
 
 
 def _settings(root: Path) -> AppSettings:
@@ -106,6 +133,55 @@ def _fully_expanded_line_numbers(
         gap = context_lookup[gap_id]
         start = int(getattr(gap, start_name))
         numbers.extend(range(start + 1, start + len(gap.lines) + 1))
+    return numbers
+
+
+def _browser_fully_expanded_line_numbers(
+    presentation: dict[str, Any],
+    context_lookup: dict[str, Any],
+    side: str,
+) -> list[int]:
+    """Reconstruct full context expansion at the browser's actual insertion points."""
+    line_key = "testLine" if side == "TEST" else "devLine"
+    start_name = "test_start" if side == "TEST" else "dev_start"
+    before: dict[int, list[dict[str, Any]]] = {}
+    after: dict[int, list[dict[str, Any]]] = {}
+
+    for change in [
+        *presentation.get("changes", []),
+        *presentation.get("hiddenChanges", []),
+    ]:
+        marker_index = change.get("markerIndex")
+        before_gap = change.get("beforeGap")
+        if before_gap and marker_index is not None:
+            before.setdefault(int(marker_index), []).append(before_gap)
+
+        panel_after = change.get("panelAfter")
+        after_gap = change.get("afterGap")
+        if after_gap and panel_after is not None:
+            after.setdefault(int(panel_after), []).append(after_gap)
+
+    for gap in presentation.get("contextGaps", []):
+        before.setdefault(int(gap.get("insertAt", 0)), []).append(gap)
+
+    numbers: list[int] = []
+
+    def append_gap(gap_payload: dict[str, Any]) -> None:
+        gap = context_lookup[str(gap_payload["id"])]
+        start = int(getattr(gap, start_name))
+        numbers.extend(range(start + 1, start + len(gap.lines) + 1))
+
+    for index, line in enumerate(presentation["lines"]):
+        for gap in before.get(index, []):
+            append_gap(gap)
+        if line.get(line_key) is not None:
+            numbers.append(int(line[line_key]))
+        for gap in after.get(index + 1, []):
+            append_gap(gap)
+
+    for gap in before.get(len(presentation["lines"]), []):
+        append_gap(gap)
+
     return numbers
 
 
@@ -310,3 +386,50 @@ def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
     ]
     assert {line["kind"] for line in profile_rows} == {"remove", "add"}
     assert any(line["kind"] == "selector_continuation" for line in focused_expanded["lines"])
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known web context placement bug: a leading omitted gap is inserted at "
+        "the change marker after already-rendered leading context, so fully "
+        "expanded line numbers can move backward."
+    ),
+)
+def test_browser_full_context_expansion_preserves_physical_line_order(
+    tmp_path: Path,
+) -> None:
+    """Every fully expanded browser row must occur at its physical file position."""
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (target / "values.yaml").write_text(
+        MISPLACED_LEADING_CONTEXT_TEST_YAML, encoding="utf-8"
+    )
+    (source / "values.yaml").write_text(
+        MISPLACED_LEADING_CONTEXT_DEV_YAML, encoding="utf-8"
+    )
+
+    snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(
+        Workbench(_settings(root))
+    )
+    focused = snapshot["files"][0]["focused"]
+
+    test_numbers = _browser_fully_expanded_line_numbers(
+        focused, context_lookup, "TEST"
+    )
+    dev_numbers = _browser_fully_expanded_line_numbers(
+        focused, context_lookup, "DEV"
+    )
+
+    expected_test = list(
+        range(1, len(MISPLACED_LEADING_CONTEXT_TEST_YAML.splitlines()) + 1)
+    )
+    expected_dev = list(
+        range(1, len(MISPLACED_LEADING_CONTEXT_DEV_YAML.splitlines()) + 1)
+    )
+
+    assert test_numbers == expected_test
+    assert dev_numbers == expected_dev
