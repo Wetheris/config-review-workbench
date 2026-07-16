@@ -131,6 +131,9 @@ def test_web_page_escapes_configuration_that_looks_like_script_markup():
     assert "Expand all" in page
     assert "Collapse all" in page
     assert "scrollbar-gutter:stable" in page
+    assert ".main{min-width:0;min-height:0;overflow:hidden" in page
+    assert ".diff{flex:1 1 0;min-height:0;overscroll-behavior:contain" in page
+    assert ".tree{padding:8px;flex:1 1 0;min-height:0" in page
     assert "hidden-block" in page
 
 
