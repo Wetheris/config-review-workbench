@@ -227,8 +227,8 @@ move between changed files. Hidden Focused sections can be expanded individually
 View menu provides system, dark, and light themes.
 
 Removed and added lines keep their full red/green treatment, while the exact changed text
-is emphasized inside the line. The browser uses bold underlined spans with a stronger
-background; the terminal uses bold plus underline so small environment substitutions such as
+is emphasized inside the line. The browser uses bold spans with a stronger background; the
+terminal uses bold reverse-video highlighting so small environment substitutions such as
 `test` → `dev` are visible at a glance. Unrelated lines are never forced into an intraline pair.
 
 Long unchanged ranges are collapsed directly inside the web diff, similar to GitLab. Click the

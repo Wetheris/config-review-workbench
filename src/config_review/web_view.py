@@ -752,9 +752,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .code { padding: 1px 10px; white-space: pre; }
 .intraline {
   font-weight: 800;
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 2px;
   border-radius: 2px;
   padding: 0 1px;
 }

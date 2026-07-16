@@ -20,7 +20,7 @@ def test_intraline_emphasis_marks_only_changed_value_tokens() -> None:
     assert [lines[1].text[start:end] for start, end in lines[1].emphasis_ranges] == ["dev"]
 
 
-def test_terminal_draw_uses_bold_underline_for_exact_change(monkeypatch: Any) -> None:
+def test_terminal_draw_uses_bold_highlight_for_exact_change(monkeypatch: Any) -> None:
     calls: list[tuple[str, int]] = []
     tui = Tui.__new__(Tui)
     tui._kind_attr = lambda _kind: 0  # type: ignore[method-assign]
@@ -33,7 +33,7 @@ def test_terminal_draw_uses_bold_underline_for_exact_change(monkeypatch: Any) ->
     tui._add = lambda _screen, _y, _x, text, attr=0: calls.append((text, attr))  # type: ignore[method-assign]
 
     monkeypatch.setattr(tui_module.curses, "A_BOLD", 0x10)
-    monkeypatch.setattr(tui_module.curses, "A_UNDERLINE", 0x20)
+    monkeypatch.setattr(tui_module.curses, "A_REVERSE", 0x20)
     line = DisplayLine(
         'value: "iesp-test-east"',
         "remove",
@@ -46,4 +46,4 @@ def test_terminal_draw_uses_bold_underline_for_exact_change(monkeypatch: Any) ->
     emphasized = [(text, attr) for text, attr in calls if text == "test"]
     assert emphasized
     assert emphasized[0][1] & tui_module.curses.A_BOLD
-    assert emphasized[0][1] & tui_module.curses.A_UNDERLINE
+    assert emphasized[0][1] & tui_module.curses.A_REVERSE

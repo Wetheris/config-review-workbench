@@ -102,8 +102,8 @@ the exact changed token inside the existing red and green line colors. For examp
 `iesp-test-east` and `iesp-dev-east` emphasize only `test` and `dev`. Pairing is conservative
 and monotonic; unrelated lines remain ordinary whole-line additions and removals.
 
-The terminal uses the same computed ranges with bold plus underline, because bold alone is not
-reliably visible across terminal themes. Plaintext exports remain literal and do not insert
+The terminal uses the same computed ranges with bold reverse-video highlighting, because bold
+alone is not reliably visible across terminal themes. Plaintext exports remain literal and do not insert
 formatting characters into configuration values.
 
 

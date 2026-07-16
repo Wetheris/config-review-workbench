@@ -1002,7 +1002,7 @@ class Tui:
         emphasis_ranges: tuple[tuple[int, int], ...],
         horizontal: int,
     ) -> None:
-        """Draw text with bold-underlined exact-change spans after horizontal clipping."""
+        """Draw text with strongly highlighted exact-change spans after horizontal clipping."""
         if horizontal >= len(text):
             return
         visible_start = max(0, horizontal)
@@ -1021,7 +1021,7 @@ class Tui:
             )
             attr = base_attr
             if emphasized:
-                attr |= curses.A_BOLD | curses.A_UNDERLINE
+                attr |= curses.A_BOLD | curses.A_REVERSE
             segment = text[start:end]
             self._add(stdscr, y, cursor, segment, attr)
             cursor += len(segment)
