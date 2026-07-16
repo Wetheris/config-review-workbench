@@ -39,6 +39,8 @@ The viewer provides:
 - Exact changed-text emphasis inside paired red/green lines
 - Temporary hidden and reviewed file lists under **Review**
 - A **Save review…** action that exports the current view as plaintext
+- A privacy-only **Copy displayed diff** action that copies the visible redacted rows with
+  both TEST and DEV line-number columns
 - Reviewed-files save and print actions
 
 Keyboard shortcuts inside the browser:
@@ -54,21 +56,24 @@ Keyboard shortcuts inside the browser:
 
 ## Per-change Git context
 
-Each reviewable change has a collapsed **Git context** section. It is loaded only when the
-reviewer expands it, so opening the viewer does not run Git blame across every changed
-line.
+Git context is not loaded or displayed automatically. Select **Add Git context** beneath a
+change to insert one compact row directly into that change panel:
 
-The incoming DEV side is shown first because it normally provides the most useful reason
-for a release change. The viewer:
+```text
+Last changed in DEV · by Example Author · Commit subject · a1b2c3d4
+```
 
-1. tries `git blame` for the exact changed lines;
-2. displays the associated commit subject, author, date, and abbreviated hash; and
-3. falls back to the latest commit touching the file when line attribution is unavailable
-   or the line is new.
+The incoming DEV side is preferred because it normally provides the most useful reason for
+a release change. The viewer tries `git blame` for the exact changed lines and falls back to
+the latest commit touching the file when line attribution is unavailable or the line is new.
+When no DEV context is available, TEST is used instead.
 
-The TEST context is shown beneath DEV for comparison. Git context is local metadata from
-the checked-out repository. It does not fetch, pull, or contact a remote when a section is
-expanded.
+When a GitLab merge commit or squash commit contains a recognizable merge-request reference,
+the abbreviated hash opens that merge request directly. Otherwise the hash opens the commit
+details page. GitLab's commit page links associated merge requests when that association is
+available, so the reviewer can still continue into the original review context without the
+workbench requiring GitLab API credentials. Git context is local metadata from the checked-out
+repository; selecting the button does not fetch, pull, or modify Git.
 
 ## Remote file sanity-check links
 
@@ -105,8 +110,11 @@ snapshot exactly. Untracked files or files outside the detected repository recei
 
 ## Inline deployment notes
 
-A reviewer can type a deployment note beneath any active change. Expanding a hidden Focused difference also reveals a note field for that exact hidden change. Notes are useful for
-questions, follow-up checks, release decisions, or environment-specific reminders.
+Select **Add note** beneath a change to open its deployment-note editor. Empty textareas are
+not created automatically. After text is entered, the button becomes **Edit note** when the
+editor is closed. Expanding a hidden Focused difference provides the same opt-in note action
+for that exact hidden change. Notes are useful for questions, follow-up checks, release
+decisions, or environment-specific reminders.
 
 Notes:
 
@@ -185,9 +193,11 @@ the same or different. Repeated protected values receive stable aliases such as 
 While privacy mode is on, the browser also:
 
 - removes remote-repository links from line gutters and change panels;
-- replaces Git context with an omission notice so author names and commit subjects are not shown;
-- hides reviewer-note contents and omits them from exports;
+- removes the per-change Git-context and note actions so author names, commit subjects, and
+  reviewer-note contents are not shown;
 - replaces absolute DEV and TEST roots with generic labels in exports; and
+- displays **Copy displayed diff**, which copies only the currently visible redacted diff rows,
+  context-gap labels, and both line-number columns; and
 - adds `-private` to exported filenames.
 
 Privacy mode is deliberately conservative but heuristic. A secret stored under an innocent key,
@@ -222,9 +232,10 @@ Git, DEV, TEST, `.config-review.yaml`, browser storage, or the terminal review s
 
 The Review menu can **Save reviewed report…** as plaintext or **Print reviewed report…** using
 the browser print dialog. These reports contain only files explicitly marked reviewed and
-include the current Focused or Raw changes, line ranges, Git context, notes, and the time each
-file was marked reviewed. Reviewed files with no exportable changes in the current mode still
-appear so the report accurately reflects the review checklist.
+include the current Focused or Raw changes, line ranges, any Git context explicitly added,
+any non-empty notes, and the time each file was marked reviewed. Reviewed files with no
+exportable changes in the current mode still appear so the report accurately reflects the
+review checklist.
 
 ## Plaintext export
 
@@ -241,8 +252,8 @@ The plaintext file contains:
 - each changed file and its status;
 - deterministic context labels and TEST-to-DEV line ranges;
 - removed and added lines;
-- incoming DEV and current TEST commit context; and
-- the reviewer's inline note for each change.
+- the compact last-change context only where **Add Git context** was selected; and
+- non-empty reviewer notes.
 
 Microsoft Edge and other Chromium-based browsers use the browser's native file-save dialog
 when the File System Access API is available. Browsers without that API fall back to a

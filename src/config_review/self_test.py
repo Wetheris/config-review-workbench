@@ -33,6 +33,8 @@ from .core import (
     WorkbenchError,
     atomic_write_text,
     compute_filter_result,
+    git_repository_commit_url,
+    git_repository_merge_request_url,
     maximum_horizontal_offset,
     parse_editor_command,
     selected_diff_body_range,
@@ -104,6 +106,24 @@ def run_regression_tests() -> int:
             check(
                 "web privacy mode masks sensitive values but preserves ordinary structure",
                 test_web_privacy_redaction,
+            )
+
+            def test_web_commit_links_prefer_merge_request_context() -> None:
+                repository = "https://gitlab.example.gov/group/project"
+                assert git_repository_commit_url(repository, "abc123") == (
+                    "https://gitlab.example.gov/group/project/-/commit/abc123"
+                )
+                assert (
+                    git_repository_merge_request_url(
+                        repository,
+                        "group/project!42",
+                    )
+                    == "https://gitlab.example.gov/group/project/-/merge_requests/42"
+                )
+
+            check(
+                "web inline Git context can link to a related merge request",
+                test_web_commit_links_prefer_merge_request_context,
             )
 
             def test_web_keyed_list_physical_timeline() -> None:

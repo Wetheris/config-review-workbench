@@ -567,10 +567,12 @@ class GitCommitContext:
     """One commit used as report context for a changed line range."""
 
     source: str  # line | file
+    commit_hash: str
     short_hash: str
     author: str
     date: str
     subject: str
+    merge_request_ref: str | None = None
 
 
 @dataclass(slots=True)
@@ -1346,6 +1348,52 @@ def git_repository_file_url(
     return url
 
 
+def git_repository_commit_url(repository_url: str, commit: str) -> str:
+    """Build a provider-aware web URL for one exact commit."""
+    base = normalize_git_repository_url(repository_url)
+    host = (urlsplit(base).hostname or "").lower()
+    encoded_commit = quote(commit, safe="")
+    if host == "github.com" or host.endswith(".github.com"):
+        return f"{base}/commit/{encoded_commit}"
+    return f"{base}/-/commit/{encoded_commit}"
+
+
+def git_repository_merge_request_url(
+    repository_url: str,
+    merge_request_ref: str | None,
+) -> str | None:
+    """Resolve a GitLab merge-request reference against a repository URL."""
+    if not merge_request_ref:
+        return None
+    reference = merge_request_ref.strip().rstrip(".,;:)")
+    if reference.startswith(("https://", "http://")):
+        repository_host = (urlsplit(repository_url).hostname or "").lower()
+        reference_host = (urlsplit(reference).hostname or "").lower()
+        if not repository_host or repository_host != reference_host:
+            return None
+        return reference
+
+    match = re.fullmatch(
+        r"(?:(?P<project>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+))?!"
+        r"(?P<iid>\d+)",
+        reference,
+    )
+    if match is None:
+        return None
+
+    base = normalize_git_repository_url(repository_url)
+    parsed = urlsplit(base)
+    host = (parsed.hostname or "").lower()
+    if host == "github.com" or host.endswith(".github.com"):
+        return None
+
+    project = match.group("project")
+    if project:
+        project_path = quote(project.strip("/"), safe="/")
+        base = f"{parsed.scheme}://{parsed.netloc}/{project_path}"
+    return f"{base}/-/merge_requests/{match.group('iid')}"
+
+
 def _git_relative_path(git_root: Path, path: Path) -> str | None:
     try:
         return path.resolve().relative_to(git_root.resolve()).as_posix()
@@ -1353,17 +1401,54 @@ def _git_relative_path(git_root: Path, path: Path) -> str | None:
         return None
 
 
+def _gitlab_merge_request_reference(message: str) -> str | None:
+    direct_url = re.search(
+        r"https?://[^\s<>]+/-/merge_requests/\d+",
+        message,
+        re.IGNORECASE,
+    )
+    if direct_url:
+        return direct_url.group(0).rstrip(".,;:)")
+
+    reference = re.search(
+        r"(?:See\s+merge\s+request\s+)?"
+        r"(?:(?P<project>[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+))?"
+        r"!(?P<iid>\d+)\b",
+        message,
+        re.IGNORECASE,
+    )
+    if reference is None:
+        return None
+    project = reference.group("project")
+    return f"{project or ''}!{reference.group('iid')}"
+
+
 def _git_commit_details(git_root: Path, commit: str, *, source: str) -> GitCommitContext | None:
     code, output, _ = _run_git_text(
         git_root,
-        ["show", "-s", "--date=short", "--format=%h%x09%an%x09%ad%x09%s", commit],
+        [
+            "show",
+            "-s",
+            "--date=short",
+            "--format=%H%x00%h%x00%an%x00%ad%x00%s%x00%B",
+            commit,
+        ],
     )
     if code != 0 or not output:
         return None
-    fields = output.split("\t", 3)
-    if len(fields) != 4:
+    fields = output.split("\0", 5)
+    if len(fields) != 6:
         return None
-    return GitCommitContext(source, fields[0], fields[1], fields[2], fields[3])
+    commit_hash, short_hash, author, date, subject, body = fields
+    return GitCommitContext(
+        source=source,
+        commit_hash=commit_hash,
+        short_hash=short_hash,
+        author=author,
+        date=date,
+        subject=subject,
+        merge_request_ref=_gitlab_merge_request_reference(body),
+    )
 
 
 def git_commit_context_for_range(

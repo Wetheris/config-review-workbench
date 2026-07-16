@@ -6,7 +6,9 @@ from pathlib import Path
 from config_review.core import (
     AppSettings,
     git_remote_to_web_url,
+    git_repository_commit_url,
     git_repository_file_url,
+    git_repository_merge_request_url,
     load_git_repository_url,
     load_project_path_settings,
     save_git_repository_url,
@@ -75,6 +77,58 @@ def test_git_file_urls_use_provider_specific_blob_and_line_ranges():
             line_end=8,
         )
         == "https://github.com/example/project/blob/abc123/dev/app.yaml#L5-L8"
+    )
+
+
+def test_git_commit_and_merge_request_urls_use_provider_specific_routes():
+    assert (
+        git_repository_commit_url(
+            "https://gitlab.example.gov/group/project",
+            "abc123",
+        )
+        == "https://gitlab.example.gov/group/project/-/commit/abc123"
+    )
+    assert (
+        git_repository_commit_url(
+            "https://github.com/example/project",
+            "abc123",
+        )
+        == "https://github.com/example/project/commit/abc123"
+    )
+    assert (
+        git_repository_merge_request_url(
+            "https://gitlab.example.gov/group/project",
+            "group/project!42",
+        )
+        == "https://gitlab.example.gov/group/project/-/merge_requests/42"
+    )
+    assert (
+        git_repository_merge_request_url(
+            "https://gitlab.example.gov/group/project",
+            "other/team!7",
+        )
+        == "https://gitlab.example.gov/other/team/-/merge_requests/7"
+    )
+    assert (
+        git_repository_merge_request_url(
+            "https://gitlab.example.gov/group/project",
+            "!9",
+        )
+        == "https://gitlab.example.gov/group/project/-/merge_requests/9"
+    )
+    assert (
+        git_repository_merge_request_url(
+            "https://github.com/example/project",
+            "example/project!9",
+        )
+        is None
+    )
+    assert (
+        git_repository_merge_request_url(
+            "https://gitlab.example.gov/group/project",
+            "https://phishing.example/other/project/-/merge_requests/9",
+        )
+        is None
     )
 
 

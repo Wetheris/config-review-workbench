@@ -228,9 +228,11 @@ move between changed files. Hidden Focused sections can be expanded individually
 View menu provides system, dark, and light themes plus a session-only **Hide sensitive
 values** privacy toggle. Privacy mode substitutes stable aliases for recognized credentials,
 endpoints, personal references, and other sensitive values; hides Git context, remote links,
-and reviewer notes; and applies the same redaction to plaintext exports. This is a sharing aid,
-not a complete secret scanner: share a privacy-mode export or screenshot, never the viewer HTML,
-because the original local snapshot remains inside the page so the toggle can be reversed.
+and reviewer notes; applies the same redaction to plaintext exports; and reveals a **Copy
+displayed diff** button that copies the currently visible redacted rows with both line-number
+columns. This is a sharing aid, not a complete secret scanner: share copied privacy-mode text,
+a privacy-mode export, or a screenshot, never the viewer HTML, because the original local
+snapshot remains inside the page so the toggle can be reversed.
 
 Removed and added lines keep their full red/green treatment, while the exact changed text
 is emphasized inside the line. The browser uses bold spans with a stronger background; the
@@ -255,11 +257,12 @@ the nearest change or file boundary and resets when the reviewer moves to anothe
 Every active change includes a review panel. Hidden Focused changes receive the same panel when expanded:
 
 - A deterministic context label describes the type of configuration change.
-- **Git context** is loaded on demand and shows the latest relevant incoming DEV commit
-  message first, with current TEST history underneath. Exact-line blame is preferred and
-  the latest file commit is used as a fallback.
-- A deployment-note field lets the reviewer record questions, release checks, or follow-up
-  work while moving through the changed files.
+- **Add Git context** loads one compact inline `Last changed in DEV · by … · message · hash`
+  row. Exact-line blame is preferred and the latest file commit is used as a fallback. The
+  hash opens the related GitLab merge request when the commit message identifies one;
+  otherwise it opens the commit page, where GitLab shows related merge requests when known.
+- **Add note** opens a deployment-note editor only for the changes the reviewer chooses to
+  annotate, instead of placing an empty textarea under every change.
 
 The browser also has temporary file-level review state. **Hide file** removes a file from
 the active tree without calling it reviewed. **Mark reviewed** moves it into the Reviewed
@@ -268,12 +271,13 @@ reopen or unreview reviewed files, save a plaintext reviewed-files report, or op
 browser print dialog for that report. These choices exist only in the current page and reset
 when the viewer is refreshed or closed.
 
-Use **Save review…** to export changes in the current Focused or Raw mode, their Git
-context, and inline notes to a plaintext `.txt` file. Focused export includes active changes
-plus any hidden change that the reviewer deliberately annotated; Raw export includes every
-literal change. Edge and other Chromium browsers use a native save dialog when available;
-other browsers fall back to a normal download. Notes stay only in the current browser page
-until exported and are never written into DEV, TEST, Git, or the workbench configuration.
+Use **Save review…** to export changes in the current Focused or Raw mode. Git context is
+included only for changes where the reviewer selected **Add Git context**, and notes are
+included only when text was entered. Focused export includes active changes plus any hidden
+change that the reviewer deliberately annotated; Raw export includes every literal change.
+Edge and other Chromium browsers use a native save dialog when available; other browsers
+fall back to a normal download. Notes stay only in the current browser page until exported
+and are never written into DEV, TEST, Git, or the workbench configuration.
 
 The viewer is still review-only for project content:
 

@@ -353,6 +353,11 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Save review…" in page
     assert "showSaveFilePicker" in page
     assert "Deployment note" in page
+    assert "Add note" in page
+    assert "Add Git context" in page
+    assert "Copy displayed diff" in page
+    assert "displayedDiffText" in page
+    assert "Copied the displayed redacted diff, including line numbers." in page
     assert "context-gap" in page
     assert "Show 10 more lines" in page
     assert "intraline" in page
@@ -369,8 +374,9 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "window.print()" in page
     assert "hiddenChanges" in page
     assert "included because it has a note" in page
-    assert "Git context · show latest incoming commit message" in page
     assert "fetch(`git/${encodeURIComponent(change.gitContextId)}`" in page
+    assert "Last changed in ${preferred.side} · by " in page
+    assert "Open the related merge request for this commit" in page
     assert "createWritable" in page
     assert "lineNumberElement" in page
     assert "Open ${label} line" in page
@@ -381,8 +387,12 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "display and exports are redacted" in page
     assert "original snapshot still exists inside this local page" in page
     assert "privateOldLines" in page
-    assert "Git context and remote links are hidden in privacy mode" in page
-    assert "Reviewer notes are hidden in privacy mode" in page
+    assert "$('copyDiff').hidden = !privacyMode" in page
+    assert "noteEditorsOpen = new Set()" in page
+    assert "inlineGitContextKeys = new Set()" in page
+    assert "if (!privacyMode && noteEditorsOpen.has(change.key))" in page
+    assert "if (!privacyMode && inlineGitContextKeys.has(change.key))" in page
+    assert "Git context · show latest incoming commit message" not in page
 
 
 def test_wsl_browser_launcher_uses_one_windows_command(
@@ -463,7 +473,16 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
     dev_lines[14] = "value: dev"
     (source / "values.yaml").write_text("\n".join(dev_lines) + "\n", encoding="utf-8")
     _git(root, "add", "dev/values.yaml")
-    _git(root, "commit", "-m", "Enable incoming DEV value")
+    _git(
+        root,
+        "commit",
+        "-m",
+        "Enable incoming DEV value",
+        "-m",
+        "See merge request group/project!42",
+    )
+    incoming_commit = _git(root, "rev-parse", "HEAD").stdout.strip()
+    _git(root, "remote", "add", "origin", "git@gitlab.example.gov:group/project.git")
 
     workbench = Workbench(_settings(root))
     snapshot = build_web_diff_snapshot(workbench)
@@ -495,6 +514,13 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
             assert payload["dev"][0]["subject"] == "Enable incoming DEV value"
             assert payload["test"][0]["subject"] == "Initial configuration"
             assert payload["dev"][0]["source"] in {"line", "file"}
+            assert payload["dev"][0]["fullHash"] == incoming_commit
+            assert payload["dev"][0]["linkKind"] == "merge request"
+            assert payload["dev"][0]["url"] == (
+                "https://gitlab.example.gov/group/project/-/merge_requests/42"
+            )
+            assert payload["test"][0]["linkKind"] == "commit"
+            assert "/-/commit/" in payload["test"][0]["url"]
 
         file_context_url = launch.url + "context/" + gap["id"] + "?count=10&edge=end"
         with urllib.request.urlopen(file_context_url, timeout=5) as response:
