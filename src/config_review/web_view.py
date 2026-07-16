@@ -662,6 +662,350 @@ def _presentation_payload(
     }
 
 
+def _semantic_line_owners(
+    presentation: DiffPresentation,
+) -> tuple[
+    dict[int, tuple[int, str]],
+    dict[int, tuple[int, str]],
+    dict[tuple[str, int, str], list[list[int]]],
+]:
+    """Map physical TEST/DEV lines back to semantic active changes."""
+    test_owners: dict[int, tuple[int, str]] = {}
+    dev_owners: dict[int, tuple[int, str]] = {}
+    emphasis: dict[tuple[str, int, str], list[list[int]]] = {}
+    for index, block in enumerate(presentation.change_blocks):
+        for offset, text in enumerate(block.old_lines):
+            test_owners[block.old_start + offset + 1] = (index, text)
+        for offset, text in enumerate(block.new_lines):
+            dev_owners[block.new_start + offset + 1] = (index, text)
+
+    for line in presentation.lines:
+        if line.kind == "remove" and line.test_line is not None:
+            emphasis[("TEST", line.test_line, line.text)] = [
+                list(item) for item in line.emphasis_ranges
+            ]
+        elif line.kind == "add" and line.dev_line is not None:
+            emphasis[("DEV", line.dev_line, line.text)] = [
+                list(item) for item in line.emphasis_ranges
+            ]
+    return test_owners, dev_owners, emphasis
+
+
+def _physical_noise_block(lines: Sequence[dict[str, Any]]) -> ChangeBlock:
+    """Create one browser-only YAML-order block from literal physical rows."""
+    test_numbers = [int(line["testLine"]) for line in lines if line.get("testLine")]
+    dev_numbers = [int(line["devLine"]) for line in lines if line.get("devLine")]
+    old_start = min(test_numbers) - 1 if test_numbers else 0
+    old_end = max(test_numbers) if test_numbers else old_start
+    new_start = min(dev_numbers) - 1 if dev_numbers else 0
+    new_end = max(dev_numbers) if dev_numbers else new_start
+    return ChangeBlock(
+        tag="replace",
+        old_start=old_start,
+        old_end=old_end,
+        new_start=new_start,
+        new_end=new_end,
+        old_lines=[str(line["text"]) for line in lines if line.get("testLine") is not None],
+        new_lines=[str(line["text"]) for line in lines if line.get("devLine") is not None],
+        hidden_by=("YAML keyed-list order",),
+    )
+
+
+def _timeline_context_gaps(
+    record: FileRecord,
+    lines: Sequence[dict[str, Any]],
+    context_lookup: ContextLookup,
+    redactor: _PrivacyRedactor,
+) -> list[dict[str, Any]]:
+    """Find omitted aligned unchanged ranges in a physical web timeline."""
+    test_lines = record.test_text.splitlines()
+    dev_lines = record.dev_text.splitlines()
+    consumed_test = 0
+    consumed_dev = 0
+    gaps: list[dict[str, Any]] = []
+
+    def add_gap(insert_at: int, test_end: int, dev_end: int) -> None:
+        nonlocal consumed_test, consumed_dev
+        test_count = test_end - consumed_test
+        dev_count = dev_end - consumed_dev
+        if test_count <= 0 or test_count != dev_count:
+            return
+        old_gap = test_lines[consumed_test:test_end]
+        new_gap = dev_lines[consumed_dev:dev_end]
+        if old_gap != new_gap:
+            return
+        values = tuple(old_gap)
+        gap_id = _gap_key(record, consumed_test, consumed_dev, values)
+        context_lookup.setdefault(
+            gap_id,
+            _ContextGapSnapshot(
+                test_start=consumed_test,
+                dev_start=consumed_dev,
+                lines=values,
+                private_lines=tuple(redactor.redact_lines(values)),
+            ),
+        )
+        gaps.append(
+            {
+                "id": gap_id,
+                "length": len(values),
+                "edge": "start",
+                "insertAt": insert_at,
+            }
+        )
+
+    for index, line in enumerate(lines):
+        test_line = line.get("testLine")
+        dev_line = line.get("devLine")
+        if test_line is None and dev_line is None:
+            continue
+        next_test = int(test_line) - 1 if test_line is not None else consumed_test
+        next_dev = int(dev_line) - 1 if dev_line is not None else consumed_dev
+        add_gap(index, next_test, next_dev)
+        if test_line is not None:
+            consumed_test = int(test_line)
+        if dev_line is not None:
+            consumed_dev = int(dev_line)
+
+    add_gap(len(lines), len(test_lines), len(dev_lines))
+    return gaps
+
+
+def _physical_semantic_presentation_payload(
+    workbench: Workbench,
+    record: FileRecord,
+    physical: DiffPresentation,
+    semantic: DiffPresentation,
+    git_lookup: GitLookup,
+    context_lookup: ContextLookup,
+    redactor: _PrivacyRedactor,
+) -> dict[str, Any]:
+    """Render semantic active changes on a monotonic physical file timeline.
+
+    Keyed-list reconciliation may pair TEST and DEV entries that live at crossed
+    physical positions. The terminal can render that as one compact logical
+    replacement, but a GitLab-style web timeline cannot. This adapter keeps the
+    physical rows in file order, hides literal move-only rows, and overlays one
+    semantic review change across all of its physical segments.
+    """
+    base = _presentation_payload(
+        workbench,
+        record,
+        physical,
+        git_lookup,
+        context_lookup,
+        redactor,
+        physical_order_fallback=True,
+    )
+    for change in [*base["changes"], *base["hiddenChanges"]]:
+        change.pop("beforeGap", None)
+        change.pop("afterGap", None)
+
+    test_owners, dev_owners, emphasis = _semantic_line_owners(semantic)
+    output: list[dict[str, Any]] = []
+    semantic_positions: dict[int, dict[str, Any]] = {
+        index: {"marker": None, "last": None, "segmentCount": 0, "continuations": []}
+        for index in range(len(semantic.change_blocks))
+    }
+    existing_hidden = iter(base["hiddenChanges"])
+    hidden_changes: list[dict[str, Any]] = []
+    noise_group: list[dict[str, Any]] = []
+    previous_owner: int | None = None
+    previous_was_active = False
+
+    def append_payload(line: dict[str, Any]) -> None:
+        output.append(dict(line))
+
+    def flush_noise() -> None:
+        nonlocal noise_group, previous_was_active
+        if not noise_group:
+            return
+        header_index = len(output)
+        count = len(noise_group)
+        header = {
+            "text": f"▼ FILTERED DIFF · YAML keyed-list order: {count} physical line(s)",
+            "privateText": (f"▼ FILTERED DIFF · YAML keyed-list order: {count} physical line(s)"),
+            "kind": "filtered_header",
+            "testLine": None,
+            "devLine": None,
+            "emphasisRanges": [],
+        }
+        append_payload(header)
+        filtered_rows: list[dict[str, Any]] = []
+        for line in noise_group:
+            filtered = dict(line)
+            filtered["kind"] = "filtered_remove" if line["kind"] == "remove" else "filtered_add"
+            filtered_rows.append(filtered)
+            append_payload(filtered)
+        block = _physical_noise_block(filtered_rows)
+        payload = _change_payload(
+            workbench,
+            record,
+            block,
+            git_lookup,
+            redactor,
+            marker_index=header_index,
+            panel_after=len(output),
+            hidden=True,
+        )
+        payload["physicalOrderOnly"] = True
+        hidden_changes.append(payload)
+        noise_group = []
+        previous_was_active = False
+
+    for line in base["lines"]:
+        kind = str(line["kind"])
+        if kind in {"selector", "selector_selected"}:
+            flush_noise()
+            previous_was_active = False
+            continue
+
+        owner: int | None = None
+        side: str | None = None
+        line_number: int | None = None
+        if kind == "remove" and line.get("testLine") is not None:
+            line_number = int(line["testLine"])
+            candidate = test_owners.get(line_number)
+            if candidate is not None and candidate[1] == line["text"]:
+                owner = candidate[0]
+                side = "TEST"
+        elif kind == "add" and line.get("devLine") is not None:
+            line_number = int(line["devLine"])
+            candidate = dev_owners.get(line_number)
+            if candidate is not None and candidate[1] == line["text"]:
+                owner = candidate[0]
+                side = "DEV"
+
+        if kind in {"remove", "add"} and owner is None:
+            noise_group.append(dict(line))
+            previous_was_active = False
+            continue
+
+        flush_noise()
+
+        if owner is None:
+            append_payload(line)
+            if kind == "filtered_header":
+                try:
+                    hidden_changes.append(next(existing_hidden))
+                except StopIteration:
+                    pass
+            previous_was_active = False
+            previous_owner = None
+            continue
+
+        position = semantic_positions[owner]
+        block = semantic.change_blocks[owner]
+        if position["marker"] is None:
+            marker_index = len(output)
+            selector = {
+                "text": "",
+                "privateText": "",
+                "kind": "selector_selected" if owner == 0 else "selector",
+                "testLine": None,
+                "devLine": None,
+                "emphasisRanges": [],
+            }
+            append_payload(selector)
+            position["marker"] = marker_index
+            position["segmentCount"] = 1
+        elif not previous_was_active or previous_owner != owner:
+            continuation_index = len(output)
+            continuation = {
+                "text": "",
+                "privateText": "",
+                "kind": "selector_continuation",
+                "testLine": None,
+                "devLine": None,
+                "emphasisRanges": [],
+            }
+            append_payload(continuation)
+            position["continuations"].append(continuation_index)
+            position["segmentCount"] = int(position["segmentCount"]) + 1
+
+        active_line = dict(line)
+        if side is not None and line_number is not None:
+            active_line["emphasisRanges"] = emphasis.get((side, line_number, str(line["text"])), [])
+        append_payload(active_line)
+        position["last"] = len(output)
+        previous_owner = owner
+        previous_was_active = True
+
+    flush_noise()
+    for hidden in existing_hidden:
+        hidden_changes.append(hidden)
+
+    physical_change_order = sorted(
+        range(len(semantic.change_blocks)),
+        key=lambda index: int(semantic_positions[index]["marker"]),
+    )
+    display_number = {owner: index + 1 for index, owner in enumerate(physical_change_order)}
+    total_changes = len(semantic.change_blocks)
+    for owner, block in enumerate(semantic.change_blocks):
+        number = display_number[owner]
+        position = semantic_positions[owner]
+        selector_text = (
+            f"▶ ACTIVE CHANGE {number}/{total_changes} · "
+            f"TEST {_line_range_text(block.old_start, block.old_end)} · "
+            f"DEV {_line_range_text(block.new_start, block.new_end)}"
+        )
+        marker_index = int(position["marker"])
+        output[marker_index]["text"] = selector_text
+        output[marker_index]["privateText"] = selector_text
+        output[marker_index]["kind"] = "selector_selected" if number == 1 else "selector"
+        continuation_text = (
+            f"↳ ACTIVE CHANGE {number}/{total_changes} continues at this physical YAML position"
+        )
+        for continuation_index in position["continuations"]:
+            output[int(continuation_index)]["text"] = continuation_text
+            output[int(continuation_index)]["privateText"] = continuation_text
+
+    changes: list[dict[str, Any]] = []
+    for index in physical_change_order:
+        block = semantic.change_blocks[index]
+        position = semantic_positions[index]
+        marker_index = position["marker"]
+        panel_after = position["last"]
+        if marker_index is None or panel_after is None:
+            raise WorkbenchError(
+                "Internal web diff consistency error: a semantic change could not "
+                "be located on the physical file timeline."
+            )
+        payload = _change_payload(
+            workbench,
+            record,
+            block,
+            git_lookup,
+            redactor,
+            marker_index=int(marker_index),
+            panel_after=int(panel_after),
+        )
+        payload["splitPhysical"] = int(position["segmentCount"]) > 1
+        changes.append(payload)
+
+    context_gaps = _timeline_context_gaps(
+        record,
+        output,
+        context_lookup,
+        redactor,
+    )
+    return {
+        "lines": output,
+        "changes": changes,
+        "hiddenChanges": hidden_changes,
+        "contextGaps": context_gaps,
+        "visibleChanges": semantic.visible_change_count,
+        "handled": semantic.handled_count,
+        "noiseHidden": semantic.pattern_hidden_count,
+        "whitespaceHidden": semantic.whitespace_hidden_count,
+        "orderHidden": len(
+            [change for change in hidden_changes if change.get("physicalOrderOnly")]
+        ),
+        "orderUnavailable": semantic.mapping_order_unavailable_reason,
+        "physicalOrderFallback": True,
+    }
+
+
 def _build_web_diff_snapshot(
     workbench: Workbench,
 ) -> tuple[dict[str, Any], GitLookup, ContextLookup]:
@@ -694,6 +1038,8 @@ def _build_web_diff_snapshot(
             expand_filtered=True,
             selected_change=0,
         )
+        semantic_focused = focused
+        semantic_focused_expanded = focused_expanded
         physical_order_fallback = not (
             _presentation_preserves_physical_order(focused)
             and _presentation_preserves_physical_order(focused_expanded)
@@ -723,30 +1069,50 @@ def _build_web_diff_snapshot(
                 selected_change=0,
             )
         status, counts = workbench.file_status(record)
+        if physical_order_fallback:
+            focused_payload = _physical_semantic_presentation_payload(
+                workbench,
+                record,
+                focused,
+                semantic_focused,
+                git_lookup,
+                context_lookup,
+                redactor,
+            )
+            focused_expanded_payload = _physical_semantic_presentation_payload(
+                workbench,
+                record,
+                focused_expanded,
+                semantic_focused_expanded,
+                git_lookup,
+                context_lookup,
+                redactor,
+            )
+        else:
+            focused_payload = _presentation_payload(
+                workbench,
+                record,
+                focused,
+                git_lookup,
+                context_lookup,
+                redactor,
+            )
+            focused_expanded_payload = _presentation_payload(
+                workbench,
+                record,
+                focused_expanded,
+                git_lookup,
+                context_lookup,
+                redactor,
+            )
         files.append(
             {
                 "path": record.relative_path,
                 "privatePath": redactor.redact_path(record.relative_path),
                 "status": status,
                 "states": list(record.states),
-                "focused": _presentation_payload(
-                    workbench,
-                    record,
-                    focused,
-                    git_lookup,
-                    context_lookup,
-                    redactor,
-                    physical_order_fallback=physical_order_fallback,
-                ),
-                "focusedExpanded": _presentation_payload(
-                    workbench,
-                    record,
-                    focused_expanded,
-                    git_lookup,
-                    context_lookup,
-                    redactor,
-                    physical_order_fallback=physical_order_fallback,
-                ),
+                "focused": focused_payload,
+                "focusedExpanded": focused_expanded_payload,
                 "raw": _presentation_payload(
                     workbench,
                     record,
@@ -1169,11 +1535,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .add .intraline, .add_note .intraline, .filtered_add .intraline { background: #3fb95055; }
 .remove, .remove_note, .filtered_remove { background: var(--delbg); color: var(--del); border-left-color: #f85149; }
 .add, .add_note, .filtered_add { background: var(--addbg); color: var(--add); border-left-color: #3fb950; }
-.hunk, .title, .section, .selector, .selector_selected, .test_file_header, .dev_file_header, .file_header {
+.hunk, .title, .section, .selector, .selector_selected, .selector_continuation, .test_file_header, .dev_file_header, .file_header {
   background: var(--accentbg);
   color: var(--accent);
   font-weight: 600;
 }
+.selector_continuation { color: var(--muted); font-style: italic; }
 .filtered, .filtered_header, .handled { background: var(--hiddenbg); color: var(--hidden); }
 .error { background: var(--delbg); color: var(--del); font-weight: 700; }
 .empty { padding: 48px; text-align: center; color: var(--muted); }
@@ -1213,6 +1580,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .review-remote-links { display: inline-flex; gap: 7px; white-space: nowrap; }
 .review-remote-links a { color: var(--accent); text-decoration: none; font-size: 12px; }
 .review-remote-links a:hover, .review-remote-links a:focus-visible { text-decoration: underline; }
+.split-change-note {
+  padding: 8px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--gutter);
+}
 .git-context { border-bottom: 1px solid var(--border); }
 .git-context summary { cursor: pointer; padding: 8px 12px; color: var(--accent); user-select: none; }
 .git-context[open] summary { border-bottom: 1px solid var(--border); }
@@ -1848,6 +2221,13 @@ function reviewPanel(change) {
   if (remoteLinks.childElementCount) heading.append(remoteLinks);
   heading.append(ranges);
 
+  let splitNotice = null;
+  if (change.splitPhysical) {
+    splitNotice = document.createElement('div');
+    splitNotice.className = 'split-change-note';
+    splitNotice.textContent = 'This is one keyed-list value change. Its TEST and DEV rows appear at separate physical YAML positions.';
+  }
+
   let gitDetails;
   if (privacyMode) {
     gitDetails = document.createElement('div');
@@ -1899,7 +2279,9 @@ function reviewPanel(change) {
   }
   noteWrap.append(noteLabel, textarea);
 
-  panel.append(heading, gitDetails, noteWrap);
+  panel.append(heading);
+  if (splitNotice) panel.append(splitNotice);
+  panel.append(gitDetails, noteWrap);
   return panel;
 }
 
@@ -1923,6 +2305,11 @@ function gapsByStart(view) {
     if (!change.beforeGap || change.markerIndex == null) continue;
     if (!result.has(change.markerIndex)) result.set(change.markerIndex, []);
     result.get(change.markerIndex).push(change.beforeGap);
+  }
+  for (const gap of view.contextGaps ?? []) {
+    const insertAt = Number(gap.insertAt ?? 0);
+    if (!result.has(insertAt)) result.set(insertAt, []);
+    result.get(insertAt).push(gap);
   }
   return result;
 }
@@ -1955,6 +2342,7 @@ function appendRawLines(host, view) {
     appendPanels(host, panelEnd, index + 1);
     appendAfterGaps(host, gapEnd, index + 1);
   }
+  appendBeforeGaps(host, gapStart, view.lines.length);
 }
 
 function appendFocusedLines(host, view) {
@@ -1967,13 +2355,13 @@ function appendFocusedLines(host, view) {
   let pendingContext = null;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
+    appendBeforeGaps(host, gapStart, index);
     if (line.kind === 'filtered_context' && lines[index + 1]?.kind === 'filtered_header') {
       pendingContext = line;
       appendPanels(host, panelEnd, index + 1);
       continue;
     }
     if (line.kind !== 'filtered_header') {
-      appendBeforeGaps(host, gapStart, index);
       host.append(lineElement(line));
       appendPanels(host, panelEnd, index + 1);
       appendAfterGaps(host, gapEnd, index + 1);
@@ -2003,7 +2391,7 @@ function appendFocusedLines(host, view) {
       index++;
       body.append(lineElement(lines[index]));
     }
-    if (hiddenChange) body.append(reviewPanel(hiddenChange));
+    if (hiddenChange && !hiddenChange.physicalOrderOnly) body.append(reviewPanel(hiddenChange));
     details.append(body);
     host.append(details);
     if (hiddenChange?.afterGap) {
@@ -2011,6 +2399,7 @@ function appendFocusedLines(host, view) {
     }
     appendPanels(host, panelEnd, index + 1);
   }
+  appendBeforeGaps(host, gapStart, lines.length);
 }
 
 
@@ -2033,7 +2422,7 @@ function renderDiff() {
   $('raw').classList.toggle('active', mode === 'raw');
   const hidden = summaryView.noiseHidden + summaryView.whitespaceHidden + summaryView.orderHidden;
   const physicalOrderNote = summaryView.physicalOrderFallback
-    ? ' · YAML moves shown at literal file positions'
+    ? ' · logical YAML changes mapped onto physical file positions'
     : '';
   const privacyNote = privacyMode ? ' · PRIVACY MODE' : '';
   $('meta').textContent = `${file.status} · ${summaryView.visibleChanges} visible change${summaryView.visibleChanges === 1 ? '' : 's'}${mode === 'focused' ? ` · ${hidden} hidden (click to expand) · ${summaryView.handled} handled${physicalOrderNote}` : ''}${privacyNote}`;

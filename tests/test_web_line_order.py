@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from config_review.core import AppSettings, compute_filter_result
 from config_review.web_view import _build_web_diff_snapshot, build_web_diff_snapshot
 from config_review.workbench import Workbench
@@ -101,6 +99,8 @@ def _fully_expanded_line_numbers(
             gap = change.get(name)
             if gap:
                 referenced_gap_ids.add(str(gap["id"]))
+    for gap in presentation.get("contextGaps", []):
+        referenced_gap_ids.add(str(gap["id"]))
 
     for gap_id in referenced_gap_ids:
         gap = context_lookup[gap_id]
@@ -240,14 +240,6 @@ def test_engine_reconciles_adjacent_moved_named_items_as_one_value_change() -> N
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known web fallback bug: preserving physical line order disables keyed-list "
-        "reconciliation for the entire file, splitting one logical value change into "
-        "two add/delete panels and repeating an unchanged adjacent named item."
-    ),
-)
 def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
     tmp_path: Path,
 ) -> None:
@@ -260,21 +252,15 @@ def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
     (target / "values.yaml").write_text(ADJACENT_MOVED_TEST_YAML, encoding="utf-8")
     (source / "values.yaml").write_text(ADJACENT_MOVED_DEV_YAML, encoding="utf-8")
 
-    snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(
-        Workbench(_settings(root))
-    )
+    snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(Workbench(_settings(root)))
     focused_expanded = snapshot["files"][0]["focusedExpanded"]
 
     # The physical file timeline must stay trustworthy.
     _assert_strictly_increasing(_line_numbers(focused_expanded, "TEST"), "TEST")
     _assert_strictly_increasing(_line_numbers(focused_expanded, "DEV"), "DEV")
 
-    fully_expanded_test = _fully_expanded_line_numbers(
-        focused_expanded, context_lookup, "TEST"
-    )
-    fully_expanded_dev = _fully_expanded_line_numbers(
-        focused_expanded, context_lookup, "DEV"
-    )
+    fully_expanded_test = _fully_expanded_line_numbers(focused_expanded, context_lookup, "TEST")
+    fully_expanded_dev = _fully_expanded_line_numbers(focused_expanded, context_lookup, "DEV")
     assert sorted(fully_expanded_test) == list(
         range(1, len(ADJACENT_MOVED_TEST_YAML.splitlines()) + 1)
     )
@@ -298,3 +284,29 @@ def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
         "SPRING_CONFIG_ADDITIONAL_LOCATION" not in line
         for line in [*change["oldLines"], *change["newLines"]]
     )
+
+    selectors = [
+        line["text"]
+        for line in focused_expanded["lines"]
+        if line["kind"] in {"selector", "selector_selected"}
+    ]
+    assert selectors == ["▶ ACTIVE CHANGE 1/1 · TEST 7-8 · DEV 5-6"]
+
+    additional_location_rows = [
+        line
+        for line in focused_expanded["lines"]
+        if "SPRING_CONFIG_ADDITIONAL_LOCATION" in line["text"]
+        or "file:/app/config/application-extra.yml" in line["text"]
+    ]
+    assert additional_location_rows
+    assert all(line["kind"].startswith("filtered_") for line in additional_location_rows)
+
+    profile_rows = [
+        line
+        for line in focused_expanded["lines"]
+        if "SPRING_PROFILES_ACTIVE" in line["text"]
+        or 'value: "prod"' in line["text"]
+        or 'value: "prod,seed"' in line["text"]
+    ]
+    assert {line["kind"] for line in profile_rows} == {"remove", "add"}
+    assert any(line["kind"] == "selector_continuation" for line in focused_expanded["lines"])

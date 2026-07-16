@@ -138,11 +138,16 @@ The terminal can safely present that as one logical replacement, but a single Gi
 two-column file timeline cannot place crossed TEST and DEV coordinates without making one
 side's line numbers move backward.
 
-When the web snapshot detects that condition, it keeps every other Focused Diff filter but
-shows YAML moves at their literal add/delete positions for that file. The browser labels this
-as **YAML moves shown at literal file positions**. This conservative fallback keeps expanded
-context, notes, Git links, and line-number gutters trustworthy instead of forcing a misleading
-semantic alignment. The terminal's logical keyed-list review remains unchanged.
+When the web snapshot detects that condition, it keeps the literal rows in physical file order
+but does not discard the semantic keyed-list result. The one real value change remains one
+active review item. Its TEST and DEV rows appear at their separate physical positions, joined by
+an **ACTIVE CHANGE continues** marker, while unchanged adjacent moved entries are collapsed as
+**YAML keyed-list order** noise.
+
+The browser labels this as **logical YAML changes mapped onto physical file positions**. This
+keeps line-number gutters, expanded context, notes, and Git links trustworthy without turning
+one logical value change back into duplicate add/delete panels. The terminal's compact logical
+keyed-list review remains unchanged.
 
 ## Exact changed-text emphasis
 

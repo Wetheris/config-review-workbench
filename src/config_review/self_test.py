@@ -46,7 +46,7 @@ from .workbench import (
 from .plain import (
     format_display_line,
 )
-from .web_view import _PrivacyRedactor
+from .web_view import _PrivacyRedactor, _build_web_diff_snapshot
 
 
 def run_regression_tests() -> int:
@@ -104,6 +104,72 @@ def run_regression_tests() -> int:
             check(
                 "web privacy mode masks sensitive values but preserves ordinary structure",
                 test_web_privacy_redaction,
+            )
+
+            def test_web_keyed_list_physical_timeline() -> None:
+                web_root = root / "web-keyed-list"
+                web_source = web_root / "dev"
+                web_target = web_root / "test"
+                web_source.mkdir(parents=True)
+                web_target.mkdir()
+                web_target.joinpath("values.yaml").write_text(
+                    """imagePullSecrets:
+  - name: example-pull-secret
+deployment:
+  env:
+    - name: SPRING_APPLICATION_NAME
+      value: "service"
+    - name: SPRING_PROFILES_ACTIVE
+      value: "prod"
+    - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+      value: "file:/app/config/application-extra.yml"
+""",
+                    encoding="utf-8",
+                )
+                web_source.joinpath("values.yaml").write_text(
+                    """imagePullSecrets:
+  - name: example-pull-secret
+deployment:
+  env:
+    - name: SPRING_PROFILES_ACTIVE
+      value: "prod,seed"
+    - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+      value: "file:/app/config/application-extra.yml"
+    - name: SPRING_APPLICATION_NAME
+      value: "service"
+""",
+                    encoding="utf-8",
+                )
+                web_settings = AppSettings(
+                    source=web_source,
+                    target=web_target,
+                    config_file=web_root / ".config-review.yaml",
+                    context=3,
+                    include_secrets=False,
+                    edit_command="vim",
+                    vimdiff_command="vimdiff",
+                    dry_run=False,
+                )
+                snapshot, _git_lookup, _context_lookup = _build_web_diff_snapshot(
+                    Workbench(web_settings)
+                )
+                view = snapshot["files"][0]["focusedExpanded"]
+                assert view["visibleChanges"] == 1
+                assert len(view["changes"]) == 1
+                assert view["changes"][0]["splitPhysical"] is True
+                assert all(
+                    line["kind"].startswith("filtered_")
+                    for line in view["lines"]
+                    if "SPRING_CONFIG_ADDITIONAL_LOCATION" in line["text"]
+                )
+                test_numbers = [line["testLine"] for line in view["lines"] if line["testLine"]]
+                dev_numbers = [line["devLine"] for line in view["lines"] if line["devLine"]]
+                assert test_numbers == sorted(set(test_numbers))
+                assert dev_numbers == sorted(set(dev_numbers))
+
+            check(
+                "web keyed-list changes keep one logical review item on a physical timeline",
+                test_web_keyed_list_physical_timeline,
             )
 
             def test_selected_diff_guide_range() -> None:
