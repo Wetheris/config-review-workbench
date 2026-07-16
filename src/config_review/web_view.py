@@ -1539,16 +1539,28 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .review-actions button.active { border-color: var(--accent); color: var(--accent); }
 .line-git-context {
   grid-column: 4 / -1;
-  padding: 2px 10px 5px;
-  color: var(--text);
-  font: 12px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+  margin-left: 18px;
+  padding: 3px 10px 6px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font: 11px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.line-git-context::before {
+  content: "Git context";
+  display: inline-block;
+  margin-right: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
 .line-git-context.no-context { color: var(--muted); }
 .inline-git-prefix { color: var(--muted); }
-.inline-git-author { font-weight: 700; }
-.inline-git-subject { color: var(--text); }
+.inline-git-author { color: var(--muted); font-weight: 600; }
+.inline-git-subject { color: var(--muted); }
 .inline-git-hash {
   color: var(--accent);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -2094,7 +2106,7 @@ function commitContextForSide(context, side) {
   return values?.[0] ?? null;
 }
 
-function firstChangedLineRow(change, side) {
+function lastChangedLineRow(change, side) {
   const isTest = side === 'TEST';
   const start = Number(isTest ? change.testStart : change.devStart) + 1;
   const end = Number(isTest ? change.testEnd : change.devEnd);
@@ -2103,12 +2115,13 @@ function firstChangedLineRow(change, side) {
   const expectedKinds = isTest
     ? new Set(['remove', 'remove_note'])
     : new Set(['add', 'add_note']);
+  let match = null;
   for (const row of $('diff').querySelectorAll('.line')) {
     if (![...expectedKinds].some(kind => row.classList.contains(kind))) continue;
     const value = Number(row.dataset[attribute]);
-    if (Number.isFinite(value) && value >= start && value <= end) return row;
+    if (Number.isFinite(value) && value >= start && value <= end) match = row;
   }
-  return null;
+  return match;
 }
 
 function lineGitContextElement(side, context) {
@@ -2152,7 +2165,7 @@ async function renderInlineGitContext(change) {
   const context = await getGitContext(change);
   if (privacyMode || !inlineGitContextKeys.has(change.key)) return;
   for (const side of ['TEST', 'DEV']) {
-    const row = firstChangedLineRow(change, side);
+    const row = lastChangedLineRow(change, side);
     if (!row) continue;
     row.querySelector(`:scope > .line-git-context[data-side="${side}"]`)?.remove();
     row.append(lineGitContextElement(side, context));
@@ -2228,7 +2241,7 @@ function reviewActionRow(panel, change) {
     if (inlineGitContextKeys.has(change.key)) {
       inlineGitContextKeys.delete(change.key);
       for (const side of ['TEST', 'DEV']) {
-        firstChangedLineRow(change, side)
+        lastChangedLineRow(change, side)
           ?.querySelector(`:scope > .line-git-context[data-side="${side}"]`)
           ?.remove();
       }

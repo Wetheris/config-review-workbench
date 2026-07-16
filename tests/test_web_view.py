@@ -377,8 +377,9 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "included because it has a note" in page
     assert "fetch(`git/${encodeURIComponent(change.gitContextId)}`" in page
     assert "Last changed in ${side} · by " in page
-    assert "firstChangedLineRow" in page
+    assert "lastChangedLineRow" in page
     assert "line-git-context" in page
+    assert 'content: "Git context"' in page
     assert "Hide Git context" in page
     assert "Open the related merge request for this commit" in page
     assert "createWritable" in page

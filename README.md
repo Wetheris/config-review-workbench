@@ -258,12 +258,13 @@ the nearest change or file boundary and resets when the reviewer moves to anothe
 Every active change includes a review panel. Hidden Focused changes receive the same panel when expanded:
 
 - A deterministic context label describes the type of configuration change.
-- **Add Git context** annotates the first red TEST line and first green DEV line separately.
-  Each annotation shows `Last changed in TEST/DEV · by … · message · hash`. Exact-line blame
-  is preferred and the latest file commit is used as a fallback. The hash opens the related
-  GitLab merge request when the commit message identifies one; otherwise it opens the commit
-  page, where GitLab shows related merge requests when known. The same button becomes
-  **Hide Git context** while the annotations are visible.
+- **Add Git context** places a compact history footer after the final red TEST line and final
+  green DEV line in the grouped change. Each footer shows
+  `Last changed in TEST/DEV · by … · message · hash`. Attribution still uses exact-line blame
+  for the first changed line on that side, with the latest file commit used as a fallback. The
+  hash opens the related GitLab merge request when the commit message identifies one; otherwise
+  it opens the commit page, where GitLab shows related merge requests when known. The same
+  button becomes **Hide Git context** while the footers are visible.
 - **Add note** opens a deployment-note editor only for the changes the reviewer chooses to
   annotate, instead of placing an empty textarea under every change.
 

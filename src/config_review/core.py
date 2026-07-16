@@ -1451,6 +1451,29 @@ def _git_commit_details(git_root: Path, commit: str, *, source: str) -> GitCommi
     )
 
 
+def _git_commits_newest_first(
+    git_root: Path,
+    relative: str,
+    commits: Sequence[str],
+) -> list[str]:
+    """Order blamed commits by repository history instead of physical line order."""
+    if len(commits) < 2:
+        return list(commits)
+    code, output, _ = _run_git_text(
+        git_root,
+        ["log", "--format=%H", "--", relative],
+        timeout=5.0,
+        env={"GIT_PAGER": "cat"},
+    )
+    if code != 0:
+        return list(commits)
+    wanted = set(commits)
+    ordered = [commit for commit in output.splitlines() if commit in wanted]
+    seen = set(ordered)
+    ordered.extend(commit for commit in commits if commit not in seen)
+    return ordered
+
+
 def git_commit_context_for_range(
     git_root: Path | None,
     path: Path,
@@ -1488,9 +1511,8 @@ def git_commit_context_for_range(
             if set(commit) == {"0"} or commit in hashes:
                 continue
             hashes.append(commit)
-            if len(hashes) >= limit:
-                break
 
+    hashes = _git_commits_newest_first(git_root, relative, hashes)[:limit]
     contexts = [
         context
         for commit in hashes

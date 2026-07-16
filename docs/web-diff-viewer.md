@@ -57,20 +57,23 @@ Keyboard shortcuts inside the browser:
 ## Per-change Git context
 
 Git context is not loaded or displayed automatically. Select **Add Git context** beneath a
-change to annotate the first changed line on each available side:
+change to place a compact footer after the final changed line on each available side:
 
 ```text
 - value: "test-value"
-  Last changed in TEST · by Test Author · Test commit subject · a1b2c3d4
+- another: "test-setting"
+    Git context · Last changed in TEST · by Test Author · Test commit subject · a1b2c3d4
 + value: "dev-value"
-  Last changed in DEV · by Dev Author · DEV commit subject · e5f6a7b8
++ another: "dev-setting"
+    Git context · Last changed in DEV · by Dev Author · DEV commit subject · e5f6a7b8
 ```
 
-TEST and DEV are resolved independently so each red/green side shows the history for that
-physical line. The viewer tries `git blame` for the exact first changed line and falls back to
-the latest commit touching that side's file when line attribution is unavailable or the line
-is new. Multi-line changes receive one annotation on the first changed line per side. While
-shown, the action becomes **Hide Git context**.
+TEST and DEV are resolved independently. Attribution still uses `git blame` for the exact first
+changed line on each side and falls back to the latest commit touching that side's file when line
+attribution is unavailable or the line is new. Multi-line changes receive one footer after the
+final changed line per side. The footer is smaller, muted, indented, and explicitly labeled
+**Git context** so it cannot be mistaken for configuration content. While shown, the action
+becomes **Hide Git context**.
 
 When a GitLab merge commit or squash commit contains a recognizable merge-request reference,
 the abbreviated hash opens that merge request directly. Otherwise the hash opens the commit
