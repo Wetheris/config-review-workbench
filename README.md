@@ -226,15 +226,21 @@ Use **Focused** for the same filtered quick-review presentation used by the term
 move between changed files. Hidden Focused sections can be expanded individually, and the
 View menu provides system, dark, and light themes.
 
+Removed and added lines keep their full red/green treatment, while the exact changed text
+is emphasized inside the line. The browser uses bold underlined spans with a stronger
+background; the terminal uses bold plus underline so small environment substitutions such as
+`test` → `dev` are visible at a glance. Unrelated lines are never forced into an intraline pair.
+
+Long unchanged ranges are collapsed directly inside the web diff, similar to GitLab. Click the
+gray `↑` or `↓` row to reveal ten more aligned lines at a time. Expansion can continue until
+the nearest change or file boundary and resets when the reviewer moves to another file.
+
 Every active change includes a review panel. Hidden Focused changes receive the same panel when expanded:
 
 - A deterministic context label describes the type of configuration change.
 - **Git context** is loaded on demand and shows the latest relevant incoming DEV commit
   message first, with current TEST history underneath. Exact-line blame is preferred and
   the latest file commit is used as a fallback.
-- **File context** shows nearby TEST and DEV lines. Each click can add ten more lines above
-  or below until the beginning or end of the file is reached. Expanded context resets when
-  the reviewer moves to another file.
 - A deployment-note field lets the reviewer record questions, release checks, or follow-up
   work while moving through the changed files.
 
@@ -262,7 +268,7 @@ The viewer is still review-only for project content:
 - It binds only to `127.0.0.1` on a random port and uses a random URL token.
 - HTML, CSS, and JavaScript are bundled locally; no CDN, telemetry, or external request is
   used.
-- The server exposes only diff presentation data, bounded snapshot context, and read-only
+- The server exposes only diff presentation data, bounded aligned context gaps, and read-only
   Git metadata for known changes. It does not provide arbitrary file access or a file-write
   endpoint.
 

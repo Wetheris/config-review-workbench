@@ -6,6 +6,9 @@ Part of the modular Config Review Workbench source distribution. Build the porta
 
 from __future__ import annotations
 
+import difflib
+import re
+
 from typing import Any, Mapping, Sequence
 
 try:
@@ -66,6 +69,169 @@ def _line_number_width(old_length: int, new_length: int) -> int:
 
 def _empty_filter_result() -> FilterResult:
     return FilterResult(opcodes=[], blocks=[], hidden=[], visible=[])
+
+
+_REMOVE_KINDS = {"remove", "remove_note", "filtered_remove"}
+_ADD_KINDS = {"add", "add_note", "filtered_add"}
+
+
+def _line_pair_score(old: str, new: str) -> float:
+    """Return a conservative similarity score for possible intraline pairing."""
+    if not old or not new:
+        return 0.0
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    ratio = matcher.ratio()
+    prefix = 0
+    for left, right in zip(old, new):
+        if left != right:
+            break
+        prefix += 1
+    suffix = 0
+    for left, right in zip(reversed(old[prefix:]), reversed(new[prefix:])):
+        if left != right:
+            break
+        suffix += 1
+    shared_signal = prefix + suffix
+    if ratio < 0.55:
+        return 0.0
+    if shared_signal < 4 and ratio < 0.72:
+        return 0.0
+    return ratio
+
+
+def _pair_similar_lines(
+    old_lines: Sequence[str], new_lines: Sequence[str]
+) -> list[tuple[int, int]]:
+    """Pair similar replacement lines monotonically without forcing bad matches."""
+    old_count = len(old_lines)
+    new_count = len(new_lines)
+    if not old_count or not new_count:
+        return []
+
+    # Large wholesale replacements should stay as line-level diffs rather than
+    # spending quadratic time or inventing weak pairings.
+    if old_count * new_count > 10_000:
+        pairs: list[tuple[int, int]] = []
+        for index in range(min(old_count, new_count)):
+            if _line_pair_score(old_lines[index], new_lines[index]) > 0:
+                pairs.append((index, index))
+        return pairs
+
+    scores = [
+        [
+            _line_pair_score(old_lines[old_index], new_lines[new_index])
+            for new_index in range(new_count)
+        ]
+        for old_index in range(old_count)
+    ]
+    totals = [[0.0] * (new_count + 1) for _ in range(old_count + 1)]
+    choices = [[""] * (new_count + 1) for _ in range(old_count + 1)]
+    for old_index in range(1, old_count + 1):
+        choices[old_index][0] = "old"
+    for new_index in range(1, new_count + 1):
+        choices[0][new_index] = "new"
+
+    for old_index in range(1, old_count + 1):
+        for new_index in range(1, new_count + 1):
+            candidates = [
+                (totals[old_index - 1][new_index], "old"),
+                (totals[old_index][new_index - 1], "new"),
+            ]
+            score = scores[old_index - 1][new_index - 1]
+            if score > 0:
+                candidates.append((totals[old_index - 1][new_index - 1] + score, "pair"))
+            best_total, best_choice = max(
+                candidates,
+                key=lambda item: (item[0], item[1] == "pair", item[1] == "old"),
+            )
+            totals[old_index][new_index] = best_total
+            choices[old_index][new_index] = best_choice
+
+    pairs: list[tuple[int, int]] = []
+    old_index = old_count
+    new_index = new_count
+    while old_index or new_index:
+        choice = choices[old_index][new_index]
+        if choice == "pair":
+            pairs.append((old_index - 1, new_index - 1))
+            old_index -= 1
+            new_index -= 1
+        elif choice == "old":
+            old_index -= 1
+        else:
+            new_index -= 1
+    pairs.reverse()
+    return pairs
+
+
+def _changed_text_ranges(
+    old: str, new: str
+) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+    """Return readable token-level changed ranges, with character fallback."""
+    token_re = re.compile(r"[A-Za-z0-9_]+|[^A-Za-z0-9_]+")
+    old_tokens = list(token_re.finditer(old))
+    new_tokens = list(token_re.finditer(new))
+    matcher = difflib.SequenceMatcher(
+        None,
+        [match.group(0) for match in old_tokens],
+        [match.group(0) for match in new_tokens],
+        autojunk=False,
+    )
+    old_ranges: list[tuple[int, int]] = []
+    new_ranges: list[tuple[int, int]] = []
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if old_end > old_start:
+            old_ranges.append((old_tokens[old_start].start(), old_tokens[old_end - 1].end()))
+        if new_end > new_start:
+            new_ranges.append((new_tokens[new_start].start(), new_tokens[new_end - 1].end()))
+
+    if old_ranges or new_ranges:
+        return tuple(old_ranges), tuple(new_ranges)
+
+    # Extremely unusual strings with no token-level signal still get exact
+    # character emphasis rather than losing the at-a-glance cue entirely.
+    char_matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for tag, old_start, old_end, new_start, new_end in char_matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if old_end > old_start:
+            old_ranges.append((old_start, old_end))
+        if new_end > new_start:
+            new_ranges.append((new_start, new_end))
+    return tuple(old_ranges), tuple(new_ranges)
+
+
+def apply_intraline_emphasis(lines: Sequence[DisplayLine]) -> None:
+    """Annotate conservative remove/add pairs with exact changed text ranges."""
+    index = 0
+    while index < len(lines):
+        if lines[index].kind not in _REMOVE_KINDS:
+            index += 1
+            continue
+        old_start = index
+        while index < len(lines) and lines[index].kind in _REMOVE_KINDS:
+            index += 1
+        old_end = index
+        new_start = index
+        while index < len(lines) and lines[index].kind in _ADD_KINDS:
+            index += 1
+        new_end = index
+        if new_start == new_end:
+            continue
+
+        old_group = lines[old_start:old_end]
+        new_group = lines[new_start:new_end]
+        for old_offset, new_offset in _pair_similar_lines(
+            [line.text for line in old_group],
+            [line.text for line in new_group],
+        ):
+            old_line = old_group[old_offset]
+            new_line = new_group[new_offset]
+            old_ranges, new_ranges = _changed_text_ranges(old_line.text, new_line.text)
+            old_line.emphasis_ranges = old_ranges
+            new_line.emphasis_ranges = new_ranges
 
 
 def grouped_refined_opcodes(
@@ -875,6 +1041,7 @@ def _render_text_diff(
             bright_end += 1
         expanded_ranges.append((bright_start, bright_end))
     change_line_ranges = expanded_ranges
+    apply_intraline_emphasis(output)
 
     return DiffPresentation(
         lines=output,
@@ -999,6 +1166,7 @@ def selected_change_preview(
             output.append(DisplayLine(old_lines[old_index], "remove", test_line=old_index + 1))
             output.append(DisplayLine(new_lines[new_index], "add", dev_line=new_index + 1))
 
+    apply_intraline_emphasis(output)
     return DiffPresentation(
         lines=output,
         filter_result=_empty_filter_result(),

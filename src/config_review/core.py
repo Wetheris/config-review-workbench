@@ -394,6 +394,7 @@ class DisplayLine:
     kind: str = "text"
     test_line: int | None = None
     dev_line: int | None = None
+    emphasis_ranges: tuple[tuple[int, int], ...] = ()
 
 
 def display_line_body_width(line: DisplayLine) -> int:

@@ -992,6 +992,40 @@ class Tui:
             return curses.A_BOLD
         return self._muted_text_attr()
 
+    def _draw_emphasized_text(
+        self,
+        stdscr: Any,
+        y: int,
+        x: int,
+        text: str,
+        base_attr: int,
+        emphasis_ranges: tuple[tuple[int, int], ...],
+        horizontal: int,
+    ) -> None:
+        """Draw text with bold-underlined exact-change spans after horizontal clipping."""
+        if horizontal >= len(text):
+            return
+        visible_start = max(0, horizontal)
+        cursor = x
+        boundaries = {visible_start, len(text)}
+        for start, end in emphasis_ranges:
+            boundaries.add(max(visible_start, min(len(text), start)))
+            boundaries.add(max(visible_start, min(len(text), end)))
+        points = sorted(boundaries)
+        for start, end in zip(points, points[1:]):
+            if end <= start:
+                continue
+            emphasized = any(
+                range_start < end and range_end > start
+                for range_start, range_end in emphasis_ranges
+            )
+            attr = base_attr
+            if emphasized:
+                attr |= curses.A_BOLD | curses.A_UNDERLINE
+            segment = text[start:end]
+            self._add(stdscr, y, cursor, segment, attr)
+            cursor += len(segment)
+
     def _draw_display_line(
         self,
         stdscr: Any,
@@ -1099,7 +1133,13 @@ class Tui:
                 marker = "- "
             elif line.kind == "filtered_add":
                 marker = "+ "
-            self._add(stdscr, y, cursor, (marker + line.text)[body_horizontal:], body_attr)
+            body = marker + line.text
+            emphasis = tuple(
+                (start + len(marker), end + len(marker)) for start, end in line.emphasis_ranges
+            )
+            self._draw_emphasized_text(
+                stdscr, y, cursor, body, body_attr, emphasis, body_horizontal
+            )
             return
 
         marker = "  "
@@ -1107,7 +1147,11 @@ class Tui:
             marker = "- "
         elif line.kind == "add":
             marker = "+ "
-        self._add(stdscr, y, cursor, (marker + line.text)[horizontal:], body_attr)
+        body = marker + line.text
+        emphasis = tuple(
+            (start + len(marker), end + len(marker)) for start, end in line.emphasis_ranges
+        )
+        self._draw_emphasized_text(stdscr, y, cursor, body, body_attr, emphasis, horizontal)
 
     def detail_screen(
         self,

@@ -51,15 +51,15 @@ GitLookup = dict[str, tuple[FileRecord, ChangeBlock]]
 
 
 @dataclass(slots=True, frozen=True)
-class _ChangeContextSnapshot:
-    """Immutable file text captured when the browser snapshot is created."""
+class _ContextGapSnapshot:
+    """One immutable aligned unchanged range available for inline expansion."""
 
-    test_lines: tuple[str, ...]
-    dev_lines: tuple[str, ...]
-    block: ChangeBlock
+    test_start: int
+    dev_start: int
+    lines: tuple[str, ...]
 
 
-ContextLookup = dict[str, _ChangeContextSnapshot]
+ContextLookup = dict[str, _ContextGapSnapshot]
 
 
 def _running_under_wsl() -> bool:
@@ -107,6 +107,7 @@ def _display_line_payload(line: DisplayLine) -> dict[str, Any]:
         "kind": line.kind,
         "testLine": line.test_line,
         "devLine": line.dev_line,
+        "emphasisRanges": [list(item) for item in line.emphasis_ranges],
     }
 
 
@@ -143,7 +144,6 @@ def _change_payload(
     record: FileRecord,
     block: ChangeBlock,
     git_lookup: GitLookup,
-    context_lookup: ContextLookup,
     *,
     marker_index: int | None = None,
     panel_after: int | None = None,
@@ -151,18 +151,9 @@ def _change_payload(
 ) -> dict[str, Any]:
     key = _change_key(record, block)
     git_lookup.setdefault(key, (record, block))
-    context_lookup.setdefault(
-        key,
-        _ChangeContextSnapshot(
-            test_lines=tuple(record.test_text.splitlines()),
-            dev_lines=tuple(record.dev_text.splitlines()),
-            block=block,
-        ),
-    )
     return {
         "key": key,
         "gitContextId": key,
-        "contextId": key,
         "label": workbench._change_context_label(record, block),
         "markerIndex": marker_index,
         "panelAfter": panel_after,
@@ -176,6 +167,124 @@ def _change_payload(
         "newLines": list(block.new_lines),
         "hidden": hidden,
     }
+
+
+def _block_sort_key(block: ChangeBlock) -> tuple[int, int, int, int, int]:
+    return (
+        min(block.old_start, block.new_start),
+        block.old_start,
+        block.new_start,
+        block.old_end,
+        block.new_end,
+    )
+
+
+def _gap_key(
+    record: FileRecord,
+    test_start: int,
+    dev_start: int,
+    lines: tuple[str, ...],
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(record.relative_path.encode("utf-8", errors="surrogatepass"))
+    digest.update(b"\0GAP\0")
+    digest.update(str(test_start).encode())
+    digest.update(b"\0")
+    digest.update(str(dev_start).encode())
+    for line in lines:
+        digest.update(b"\0")
+        digest.update(line.encode("utf-8", errors="surrogatepass"))
+    return digest.hexdigest()[:24]
+
+
+def _block_context_width(block: ChangeBlock | None, configured: int) -> int:
+    if block is None:
+        return 0
+    # Expanded hidden blocks deliberately render one nearby context line.
+    return 1 if block.is_hidden else max(0, configured)
+
+
+def _aligned_gap(
+    record: FileRecord,
+    previous: ChangeBlock | None,
+    following: ChangeBlock | None,
+    configured_context: int,
+) -> tuple[int, int, tuple[str, ...]] | None:
+    test_lines = record.test_text.splitlines()
+    dev_lines = record.dev_text.splitlines()
+    test_start = previous.old_end if previous is not None else 0
+    dev_start = previous.new_end if previous is not None else 0
+    test_end = following.old_start if following is not None else len(test_lines)
+    dev_end = following.new_start if following is not None else len(dev_lines)
+    if test_end < test_start or dev_end < dev_start:
+        return None
+    old_gap = test_lines[test_start:test_end]
+    new_gap = dev_lines[dev_start:dev_end]
+    if len(old_gap) != len(new_gap) or old_gap != new_gap:
+        return None
+
+    left_trim = min(len(old_gap), _block_context_width(previous, configured_context))
+    right_trim = min(
+        max(0, len(old_gap) - left_trim),
+        _block_context_width(following, configured_context),
+    )
+    first = left_trim
+    last = len(old_gap) - right_trim
+    if last <= first:
+        return None
+    return test_start + first, dev_start + first, tuple(old_gap[first:last])
+
+
+def _attach_inline_context_gaps(
+    record: FileRecord,
+    presentation: DiffPresentation,
+    changes: list[dict[str, Any]],
+    hidden_changes: list[dict[str, Any]],
+    context_lookup: ContextLookup,
+    configured_context: int,
+) -> None:
+    payload_by_key = {payload["key"]: payload for payload in [*changes, *hidden_changes]}
+    canonical = sorted(presentation.filter_result.blocks, key=_block_sort_key)
+    if not canonical:
+        return
+
+    boundaries: list[tuple[ChangeBlock | None, ChangeBlock | None]] = [
+        (None, canonical[0]),
+        *[(canonical[index], canonical[index + 1]) for index in range(len(canonical) - 1)],
+        (canonical[-1], None),
+    ]
+    for previous, following in boundaries:
+        gap = _aligned_gap(record, previous, following, configured_context)
+        if gap is None:
+            continue
+        test_start, dev_start, lines = gap
+        gap_id = _gap_key(record, test_start, dev_start, lines)
+        context_lookup.setdefault(
+            gap_id,
+            _ContextGapSnapshot(
+                test_start=test_start,
+                dev_start=dev_start,
+                lines=lines,
+            ),
+        )
+        previous_payload = (
+            payload_by_key.get(_change_key(record, previous)) if previous is not None else None
+        )
+        following_payload = (
+            payload_by_key.get(_change_key(record, following)) if following is not None else None
+        )
+        if previous_payload is not None:
+            previous_payload["afterGap"] = {
+                "id": gap_id,
+                "length": len(lines),
+                "edge": "start",
+            }
+        elif following_payload is not None:
+            following_payload["beforeGap"] = {
+                "id": gap_id,
+                "length": len(lines),
+                "edge": "end",
+            }
 
 
 def _presentation_payload(
@@ -198,7 +307,6 @@ def _presentation_payload(
             record,
             block,
             git_lookup,
-            context_lookup,
             marker_index=marker_index,
             panel_after=min(
                 len(presentation.lines),
@@ -217,12 +325,20 @@ def _presentation_payload(
             record,
             block,
             git_lookup,
-            context_lookup,
             hidden=True,
         )
         if payload["key"] in active_keys:
             continue
         hidden_changes.append(payload)
+
+    _attach_inline_context_gaps(
+        record,
+        presentation,
+        changes,
+        hidden_changes,
+        context_lookup,
+        workbench.settings.context,
+    )
 
     return {
         "lines": [_display_line_payload(line) for line in presentation.lines],
@@ -347,46 +463,33 @@ def _bounded_query_int(values: list[str] | None, default: int) -> int:
     return max(0, min(value, 100_000))
 
 
-def _context_side_payload(
-    lines: tuple[str, ...],
-    start: int,
-    end: int,
-    before: int,
-    after: int,
+def _context_gap_payload(
+    snapshot: _ContextGapSnapshot,
+    *,
+    count: int,
+    edge: str,
 ) -> dict[str, Any]:
-    anchor_end = max(start, end)
-    first = max(0, start - before)
-    last = min(len(lines), anchor_end + after)
+    count = max(0, min(count, len(snapshot.lines)))
+    if edge == "end":
+        offset = len(snapshot.lines) - count
+    else:
+        offset = 0
+    selected = snapshot.lines[offset : offset + count]
     return {
+        "edge": edge,
+        "count": count,
+        "total": len(snapshot.lines),
+        "hasMore": count < len(snapshot.lines),
         "lines": [
             {
-                "number": index + 1,
-                "text": lines[index],
-                "changed": start <= index < end,
+                "testLine": snapshot.test_start + offset + index + 1,
+                "devLine": snapshot.dev_start + offset + index + 1,
+                "text": text,
+                "kind": "context",
+                "emphasisRanges": [],
             }
-            for index in range(first, last)
+            for index, text in enumerate(selected)
         ],
-        "moreAbove": first > 0,
-        "moreBelow": last < len(lines),
-    }
-
-
-def _context_payload(
-    snapshot: _ChangeContextSnapshot,
-    *,
-    before: int,
-    after: int,
-) -> dict[str, Any]:
-    block = snapshot.block
-    return {
-        "before": before,
-        "after": after,
-        "test": _context_side_payload(
-            snapshot.test_lines, block.old_start, block.old_end, before, after
-        ),
-        "dev": _context_side_payload(
-            snapshot.dev_lines, block.new_start, block.new_end, before, after
-        ),
     }
 
 
@@ -647,6 +750,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .prefix { padding: 1px 6px; text-align: center; color: var(--muted); user-select: none; }
 .code { padding: 1px 10px; white-space: pre; }
+.intraline {
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.remove .intraline, .remove_note .intraline, .filtered_remove .intraline { background: #f8514955; }
+.add .intraline, .add_note .intraline, .filtered_add .intraline { background: #3fb95055; }
 .remove, .remove_note, .filtered_remove { background: var(--delbg); color: var(--del); border-left-color: #f85149; }
 .add, .add_note, .filtered_add { background: var(--addbg); color: var(--add); border-left-color: #3fb950; }
 .hunk, .title, .section, .selector, .selector_selected, .test_file_header, .dev_file_header, .file_header {
@@ -724,42 +837,25 @@ button, input, select, textarea { font: inherit; color: inherit; }
   line-height: 1.4;
 }
 .review-note:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-.file-context { border-bottom: 1px solid var(--border); }
-.file-context summary { cursor: pointer; padding: 8px 12px; color: var(--accent); user-select: none; }
-.file-context[open] summary { border-bottom: 1px solid var(--border); }
-.context-content { padding: 10px 12px; }
-.context-controls { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.context-controls button {
-  border: 1px solid var(--border);
-  background: var(--panel2);
-  color: var(--text);
-  padding: 5px 8px;
-  border-radius: 6px;
-  cursor: pointer;
+.context-gap {
+  min-width: max-content;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--gutter);
 }
-.context-controls button:disabled { cursor: default; opacity: .45; }
-.context-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
-.context-side { min-width: 0; border: 1px solid var(--border); border-radius: 6px; overflow: auto; }
-.context-side-title {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 5px 8px;
-  background: var(--panel2);
+.context-gap-lines .line { background: var(--panel2); }
+.context-gap-button {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  border: 0;
+  background: var(--gutter);
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
+  cursor: pointer;
+  font: 12px/1.3 system-ui, -apple-system, Segoe UI, sans-serif;
 }
-.context-line {
-  display: grid;
-  grid-template-columns: 56px minmax(max-content, 1fr);
-  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-.context-line-number { padding: 1px 7px; text-align: right; color: var(--muted); border-right: 1px solid var(--border); user-select: none; }
-.context-line-code { padding: 1px 8px; white-space: pre; }
-.context-line.changed { background: var(--accentbg); }
-.context-loading { color: var(--muted); }
+.context-gap-button:hover { color: var(--accent); background: var(--accentbg); }
+.context-gap-button:disabled { cursor: default; color: var(--muted); opacity: .65; }
 .print-report { display: none; white-space: pre-wrap; font: 11pt/1.4 ui-monospace, Consolas, monospace; }
 .footer {
   padding: 6px 12px;
@@ -862,10 +958,9 @@ let selected = 0;
 let visible = snapshot.files.slice();
 let themeChoice = 'system';
 let notesDirty = false;
-let contextFilePath = null;
 const notesByChange = new Map();
 const gitContextCache = new Map();
-const contextStateByChange = new Map();
+const gapStateById = new Map();
 const hiddenFiles = new Set();
 const reviewedFiles = new Set();
 const reviewedAtByFile = new Map();
@@ -895,6 +990,23 @@ function defaultStatus() {
   return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · review state is temporary until exported`;
 }
 
+function appendHighlightedText(host, text, ranges = []) {
+  let cursor = 0;
+  for (const item of ranges) {
+    const start = Math.max(cursor, Math.min(text.length, Number(item?.[0] ?? 0)));
+    const end = Math.max(start, Math.min(text.length, Number(item?.[1] ?? start)));
+    if (start > cursor) host.append(document.createTextNode(text.slice(cursor, start)));
+    if (end > start) {
+      const strong = document.createElement('strong');
+      strong.className = 'intraline';
+      strong.textContent = text.slice(start, end);
+      host.append(strong);
+    }
+    cursor = end;
+  }
+  if (cursor < text.length) host.append(document.createTextNode(text.slice(cursor)));
+}
+
 function lineElement(line) {
   const row = document.createElement('div');
   row.className = 'line ' + line.kind;
@@ -909,7 +1021,7 @@ function lineElement(line) {
   prefix.textContent = prefixFor(line.kind);
   const code = document.createElement('div');
   code.className = 'code';
-  code.textContent = line.text;
+  appendHighlightedText(code, line.text, line.emphasisRanges ?? []);
   row.append(tl, dl, prefix, code);
   return row;
 }
@@ -954,8 +1066,7 @@ function selectFile(file) {
   const previousPath = currentFile()?.path ?? null;
   selected = snapshot.files.indexOf(file);
   if (previousPath !== file.path) {
-    contextStateByChange.clear();
-    contextFilePath = file.path;
+    gapStateById.clear();
   }
   render();
 }
@@ -1130,130 +1241,66 @@ async function getGitContext(change) {
   return promise;
 }
 
-async function getFileContext(change, before, after) {
+async function getGapContext(gap, count) {
   const response = await fetch(
-    `context/${encodeURIComponent(change.contextId)}?before=${before}&after=${after}`,
+    `context/${encodeURIComponent(gap.id)}?count=${count}&edge=${encodeURIComponent(gap.edge)}`,
     {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: {'Accept': 'application/json'},
     },
   );
-  if (!response.ok) throw new Error(`File context request failed (${response.status})`);
+  if (!response.ok) throw new Error(`Inline context request failed (${response.status})`);
   return response.json();
 }
 
-function contextLineElement(line) {
-  const row = document.createElement('div');
-  row.className = 'context-line' + (line.changed ? ' changed' : '');
-  const number = document.createElement('div');
-  number.className = 'context-line-number';
-  number.textContent = line.number;
-  const code = document.createElement('div');
-  code.className = 'context-line-code';
-  code.textContent = line.text;
-  row.append(number, code);
-  return row;
-}
-
-function contextSideElement(label, side) {
+function contextGapElement(gap, position) {
   const host = document.createElement('div');
-  host.className = 'context-side';
-  const title = document.createElement('div');
-  title.className = 'context-side-title';
-  title.textContent = label;
-  host.append(title);
-  if (!side.lines.length) {
-    const empty = document.createElement('div');
-    empty.className = 'no-context';
-    empty.textContent = 'No lines available on this side.';
-    host.append(empty);
+  host.className = 'context-gap';
+  host.dataset.gapId = gap.id;
+  const linesHost = document.createElement('div');
+  linesHost.className = 'context-gap-lines';
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'context-gap-button';
+
+  async function renderCount(count) {
+    button.disabled = true;
+    button.textContent = 'Loading context…';
+    try {
+      const payload = await getGapContext(gap, count);
+      gapStateById.set(gap.id, payload.count);
+      linesHost.replaceChildren(...payload.lines.map(lineElement));
+      if (payload.hasMore) {
+        const remaining = payload.total - payload.count;
+        button.disabled = false;
+        button.textContent = `${position === 'before' ? '↑' : '↓'} Show 10 more lines (${remaining} hidden)`;
+      } else {
+        button.disabled = true;
+        button.textContent = `All ${payload.total} omitted context line${payload.total === 1 ? '' : 's'} shown`;
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Could not load context: ${error.message}`;
+    }
+  }
+
+  button.onclick = () => {
+    const previous = gapStateById.get(gap.id) ?? 0;
+    renderCount(Math.min(gap.length, previous + 10));
+  };
+  if (position === 'before') host.append(button, linesHost);
+  else host.append(linesHost, button);
+
+  const shown = gapStateById.get(gap.id) ?? 0;
+  if (shown > 0) {
+    renderCount(shown);
   } else {
-    side.lines.forEach(line => host.append(contextLineElement(line)));
+    button.textContent = `${position === 'before' ? '↑' : '↓'} Show 10 more lines (${gap.length} hidden)`;
   }
   return host;
 }
 
-async function loadFileContext(details, change) {
-  const state = contextStateByChange.get(change.key) ?? {before: 10, after: 10};
-  contextStateByChange.set(change.key, state);
-  const content = details.querySelector('.context-content');
-  const grid = content.querySelector('.context-grid');
-  grid.replaceChildren();
-  const loading = document.createElement('div');
-  loading.className = 'context-loading';
-  loading.textContent = 'Loading snapshot context…';
-  grid.append(loading);
-  try {
-    const context = await getFileContext(change, state.before, state.after);
-    grid.replaceChildren(
-      contextSideElement('Current TEST', context.test),
-      contextSideElement('Incoming DEV', context.dev),
-    );
-    const above = content.querySelector('[data-context-direction="above"]');
-    const below = content.querySelector('[data-context-direction="below"]');
-    above.disabled = !context.test.moreAbove && !context.dev.moreAbove;
-    below.disabled = !context.test.moreBelow && !context.dev.moreBelow;
-    details.querySelector('summary').textContent = `File context · ${state.before} above / ${state.after} below`;
-  } catch (error) {
-    grid.replaceChildren();
-    const message = document.createElement('div');
-    message.className = 'no-context';
-    message.textContent = error.message;
-    grid.append(message);
-  }
-}
-
-function fileContextPanel(change) {
-  const details = document.createElement('details');
-  details.className = 'file-context';
-  const summary = document.createElement('summary');
-  summary.textContent = 'File context · show nearby TEST and DEV lines';
-  const content = document.createElement('div');
-  content.className = 'context-content';
-  const controls = document.createElement('div');
-  controls.className = 'context-controls';
-  const above = document.createElement('button');
-  above.type = 'button';
-  above.dataset.contextDirection = 'above';
-  above.textContent = 'Show 10 more above';
-  const below = document.createElement('button');
-  below.type = 'button';
-  below.dataset.contextDirection = 'below';
-  below.textContent = 'Show 10 more below';
-  const reset = document.createElement('button');
-  reset.type = 'button';
-  reset.textContent = 'Reset context';
-  const grid = document.createElement('div');
-  grid.className = 'context-grid';
-  controls.append(above, below, reset);
-  content.append(controls, grid);
-  details.append(summary, content);
-
-  above.onclick = event => {
-    event.preventDefault();
-    const state = contextStateByChange.get(change.key) ?? {before: 10, after: 10};
-    state.before += 10;
-    contextStateByChange.set(change.key, state);
-    loadFileContext(details, change);
-  };
-  below.onclick = event => {
-    event.preventDefault();
-    const state = contextStateByChange.get(change.key) ?? {before: 10, after: 10};
-    state.after += 10;
-    contextStateByChange.set(change.key, state);
-    loadFileContext(details, change);
-  };
-  reset.onclick = event => {
-    event.preventDefault();
-    contextStateByChange.set(change.key, {before: 10, after: 10});
-    loadFileContext(details, change);
-  };
-  details.addEventListener('toggle', () => {
-    if (details.open) loadFileContext(details, change);
-  });
-  return details;
-}
 
 function commitElement(context) {
   const row = document.createElement('div');
@@ -1335,7 +1382,6 @@ function reviewPanel(change) {
     if (gitDetails.open) loadGitContext(gitDetails, change);
   });
 
-  const contextDetails = fileContextPanel(change);
 
   const noteWrap = document.createElement('div');
   noteWrap.className = 'note-wrap';
@@ -1359,7 +1405,7 @@ function reviewPanel(change) {
   });
   noteWrap.append(noteLabel, textarea);
 
-  panel.append(heading, gitDetails, contextDetails, noteWrap);
+  panel.append(heading, gitDetails, noteWrap);
   return panel;
 }
 
@@ -1377,17 +1423,51 @@ function appendPanels(host, byEnd, lineCount) {
   for (const change of byEnd.get(lineCount) ?? []) host.append(reviewPanel(change));
 }
 
+function gapsByStart(view) {
+  const result = new Map();
+  for (const change of view.changes ?? []) {
+    if (!change.beforeGap || change.markerIndex == null) continue;
+    if (!result.has(change.markerIndex)) result.set(change.markerIndex, []);
+    result.get(change.markerIndex).push(change.beforeGap);
+  }
+  return result;
+}
+
+function gapsByEnd(view) {
+  const result = new Map();
+  for (const change of view.changes ?? []) {
+    if (!change.afterGap || change.panelAfter == null) continue;
+    if (!result.has(change.panelAfter)) result.set(change.panelAfter, []);
+    result.get(change.panelAfter).push(change.afterGap);
+  }
+  return result;
+}
+
+function appendBeforeGaps(host, byStart, lineIndex) {
+  for (const gap of byStart.get(lineIndex) ?? []) host.append(contextGapElement(gap, 'before'));
+}
+
+function appendAfterGaps(host, byEnd, lineCount) {
+  for (const gap of byEnd.get(lineCount) ?? []) host.append(contextGapElement(gap, 'after'));
+}
+
 function appendRawLines(host, view) {
-  const byEnd = panelsByEnd(view);
+  const panelEnd = panelsByEnd(view);
+  const gapStart = gapsByStart(view);
+  const gapEnd = gapsByEnd(view);
   for (let index = 0; index < view.lines.length; index++) {
+    appendBeforeGaps(host, gapStart, index);
     host.append(lineElement(view.lines[index]));
-    appendPanels(host, byEnd, index + 1);
+    appendPanels(host, panelEnd, index + 1);
+    appendAfterGaps(host, gapEnd, index + 1);
   }
 }
 
 function appendFocusedLines(host, view) {
   const lines = view.lines;
-  const byEnd = panelsByEnd(view);
+  const panelEnd = panelsByEnd(view);
+  const gapStart = gapsByStart(view);
+  const gapEnd = gapsByEnd(view);
   const hiddenChanges = view.hiddenChanges ?? [];
   let hiddenChangeIndex = 0;
   let pendingContext = null;
@@ -1395,13 +1475,19 @@ function appendFocusedLines(host, view) {
     const line = lines[index];
     if (line.kind === 'filtered_context' && lines[index + 1]?.kind === 'filtered_header') {
       pendingContext = line;
-      appendPanels(host, byEnd, index + 1);
+      appendPanels(host, panelEnd, index + 1);
       continue;
     }
     if (line.kind !== 'filtered_header') {
+      appendBeforeGaps(host, gapStart, index);
       host.append(lineElement(line));
-      appendPanels(host, byEnd, index + 1);
+      appendPanels(host, panelEnd, index + 1);
+      appendAfterGaps(host, gapEnd, index + 1);
       continue;
+    }
+    const hiddenChange = hiddenChanges[hiddenChangeIndex++];
+    if (hiddenChange?.beforeGap) {
+      host.append(contextGapElement(hiddenChange.beforeGap, 'before'));
     }
     const details = document.createElement('details');
     details.className = 'hidden-block';
@@ -1419,13 +1505,16 @@ function appendFocusedLines(host, view) {
       index++;
       body.append(lineElement(lines[index]));
     }
-    const hiddenChange = hiddenChanges[hiddenChangeIndex++];
     if (hiddenChange) body.append(reviewPanel(hiddenChange));
     details.append(body);
     host.append(details);
-    appendPanels(host, byEnd, index + 1);
+    if (hiddenChange?.afterGap) {
+      host.append(contextGapElement(hiddenChange.afterGap, 'after'));
+    }
+    appendPanels(host, panelEnd, index + 1);
   }
 }
+
 
 function renderDiff() {
   const file = currentFile();
@@ -1433,10 +1522,6 @@ function renderDiff() {
     $('path').textContent = 'No matching files';
     $('diff').innerHTML = '<div class="empty">No files match the search.</div>';
     return;
-  }
-  if (contextFilePath !== file.path) {
-    contextStateByChange.clear();
-    contextFilePath = file.path;
   }
   $('hideFile').textContent = hiddenFiles.has(file.path) ? 'Show file' : 'Hide file';
   $('reviewFile').textContent = reviewedFiles.has(file.path) ? 'Mark unreviewed' : 'Mark reviewed';
@@ -1883,9 +1968,12 @@ class _ViewerHandler(BaseHTTPRequestHandler):
                 self.send_error(404)
                 return
             query = parse_qs(parsed.query)
-            before = _bounded_query_int(query.get("before"), 10)
-            after = _bounded_query_int(query.get("after"), 10)
-            self._send_json(200, _context_payload(lookup, before=before, after=after))
+            count = _bounded_query_int(query.get("count"), 10)
+            edge = (query.get("edge") or ["start"])[0]
+            if edge not in {"start", "end"}:
+                self.send_error(400)
+                return
+            self._send_json(200, _context_gap_payload(lookup, count=count, edge=edge))
             return
 
         prefix = f"/{self.server.token}/git/"

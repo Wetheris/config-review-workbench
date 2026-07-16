@@ -10,11 +10,11 @@ from urllib.parse import urlparse
 import pytest
 
 import config_review.web_view as web_view
-from config_review.core import AppSettings, ChangeBlock
+from config_review.core import AppSettings
 from config_review.web_view import (
     LocalWebDiffViewer,
-    _ChangeContextSnapshot,
-    _context_payload,
+    _ContextGapSnapshot,
+    _context_gap_payload,
     _open_browser_once,
     _render_page,
     build_web_diff_snapshot,
@@ -76,7 +76,6 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
     assert change["devRange"] == "1"
     assert len(change["key"]) == 24
     assert change["gitContextId"] == change["key"]
-    assert change["contextId"] == change["key"]
     assert change["testStart"] == 0
     assert change["testEnd"] == 1
     assert change["devStart"] == 0
@@ -107,34 +106,51 @@ def test_focused_snapshot_exposes_note_targets_for_hidden_differences(tmp_path: 
         assert hidden["key"] == file_data["focusedExpanded"]["hiddenChanges"][0]["key"]
 
 
-def test_context_payload_expands_in_chunks_and_stops_at_file_bounds():
-    lines = tuple(f"line {index}" for index in range(1, 31))
-    snapshot = _ChangeContextSnapshot(
-        test_lines=lines,
-        dev_lines=lines,
-        block=ChangeBlock(
-            tag="replace",
-            old_start=14,
-            old_end=16,
-            new_start=14,
-            new_end=16,
-            old_lines=["line 15", "line 16"],
-            new_lines=["line 15", "line 16"],
-        ),
+def test_context_gap_payload_expands_from_either_edge_and_stops_at_bounds():
+    snapshot = _ContextGapSnapshot(
+        test_start=4,
+        dev_start=9,
+        lines=tuple(f"line {index}" for index in range(1, 31)),
     )
 
-    first = _context_payload(snapshot, before=10, after=10)
-    assert first["test"]["lines"][0]["number"] == 5
-    assert first["test"]["lines"][-1]["number"] == 26
-    assert first["test"]["moreAbove"] is True
-    assert first["test"]["moreBelow"] is True
-    assert [line["number"] for line in first["test"]["lines"] if line["changed"]] == [15, 16]
+    first = _context_gap_payload(snapshot, count=10, edge="start")
+    assert first["lines"][0] == {
+        "testLine": 5,
+        "devLine": 10,
+        "text": "line 1",
+        "kind": "context",
+        "emphasisRanges": [],
+    }
+    assert first["lines"][-1]["text"] == "line 10"
+    assert first["hasMore"] is True
 
-    expanded = _context_payload(snapshot, before=20, after=20)
-    assert expanded["test"]["lines"][0]["number"] == 1
-    assert expanded["test"]["lines"][-1]["number"] == 30
-    assert expanded["test"]["moreAbove"] is False
-    assert expanded["test"]["moreBelow"] is False
+    tail = _context_gap_payload(snapshot, count=10, edge="end")
+    assert tail["lines"][0]["text"] == "line 21"
+    assert tail["lines"][0]["testLine"] == 25
+    assert tail["lines"][-1]["text"] == "line 30"
+    assert tail["hasMore"] is True
+
+    expanded = _context_gap_payload(snapshot, count=100, edge="start")
+    assert expanded["count"] == 30
+    assert expanded["hasMore"] is False
+
+
+def test_snapshot_marks_exact_intraline_value_changes(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.yaml").write_text('value: "iesp-dev-east"\n', encoding="utf-8")
+    (target / "values.yaml").write_text('value: "iesp-test-east"\n', encoding="utf-8")
+
+    snapshot = build_web_diff_snapshot(Workbench(_settings(root)))
+    lines = snapshot["files"][0]["raw"]["lines"]
+    removed = next(line for line in lines if line["kind"] == "remove")
+    added = next(line for line in lines if line["kind"] == "add")
+
+    assert [removed["text"][start:end] for start, end in removed["emphasisRanges"]] == ["test"]
+    assert [added["text"][start:end] for start, end in added["emphasisRanges"]] == ["dev"]
 
 
 def test_snapshot_does_not_collect_git_context_eagerly(
@@ -246,9 +262,9 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Save review…" in page
     assert "showSaveFilePicker" in page
     assert "Deployment note" in page
-    assert "File context · show nearby TEST and DEV lines" in page
-    assert "Show 10 more above" in page
-    assert "Show 10 more below" in page
+    assert "context-gap" in page
+    assert "Show 10 more lines" in page
+    assert "intraline" in page
     assert "Hide file" in page
     assert "Mark reviewed" in page
     assert "Review ▾" in page
@@ -258,7 +274,7 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Print reviewed report…" in page
     assert "reviewedFiles = new Set()" in page
     assert "hiddenFiles = new Set()" in page
-    assert "contextStateByChange.clear()" in page
+    assert "gapStateById.clear()" in page
     assert "window.print()" in page
     assert "hiddenChanges" in page
     assert "included because it has a note" in page
@@ -334,18 +350,24 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
     _git(root, "config", "user.name", "Test Reviewer")
     _git(root, "config", "user.email", "reviewer@example.test")
 
-    (source / "values.yaml").write_text("value: test\n", encoding="utf-8")
-    (target / "values.yaml").write_text("value: test\n", encoding="utf-8")
+    base_lines = [f"line {index}" for index in range(1, 31)]
+    base_lines[14] = "value: test"
+    (source / "values.yaml").write_text("\n".join(base_lines) + "\n", encoding="utf-8")
+    (target / "values.yaml").write_text("\n".join(base_lines) + "\n", encoding="utf-8")
     _git(root, "add", "dev/values.yaml", "test/values.yaml")
     _git(root, "commit", "-m", "Initial configuration")
 
-    (source / "values.yaml").write_text("value: dev\n", encoding="utf-8")
+    dev_lines = base_lines.copy()
+    dev_lines[14] = "value: dev"
+    (source / "values.yaml").write_text("\n".join(dev_lines) + "\n", encoding="utf-8")
     _git(root, "add", "dev/values.yaml")
     _git(root, "commit", "-m", "Enable incoming DEV value")
 
     workbench = Workbench(_settings(root))
     snapshot = build_web_diff_snapshot(workbench)
-    context_id = snapshot["files"][0]["focused"]["changes"][0]["gitContextId"]
+    change = snapshot["files"][0]["focused"]["changes"][0]
+    context_id = change["gitContextId"]
+    gap = change["beforeGap"]
 
     viewer = LocalWebDiffViewer()
     try:
@@ -372,16 +394,15 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
             assert payload["test"][0]["subject"] == "Initial configuration"
             assert payload["dev"][0]["source"] in {"line", "file"}
 
-        file_context_url = launch.url + "context/" + context_id + "?before=10&after=10"
+        file_context_url = launch.url + "context/" + gap["id"] + "?count=10&edge=end"
         with urllib.request.urlopen(file_context_url, timeout=5) as response:
             payload = json.load(response)
             assert response.headers["Content-Type"].startswith("application/json")
-            assert payload["test"]["lines"] == [
-                {"number": 1, "text": "value: test", "changed": True}
-            ]
-            assert payload["dev"]["lines"] == [{"number": 1, "text": "value: dev", "changed": True}]
-            assert payload["test"]["moreAbove"] is False
-            assert payload["test"]["moreBelow"] is False
+            assert payload["count"] == 10
+            assert payload["edge"] == "end"
+            assert payload["lines"][-1]["text"] == "line 11"
+            assert payload["lines"][-1]["testLine"] == 11
+            assert payload["hasMore"] is True
 
         request = urllib.request.Request(launch.url, data=b"x", method="POST")
         with pytest.raises(urllib.error.HTTPError) as exc_info:

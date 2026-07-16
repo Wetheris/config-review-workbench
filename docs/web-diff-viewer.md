@@ -33,7 +33,8 @@ The viewer provides:
 - Expandable hidden sections in Focused mode
 - System, dark, and light themes under **View**
 - A review panel beneath every active change, plus every hidden Focused change when expanded
-- Incremental TEST/DEV file context around each change
+- GitLab-style inline expansion for collapsed unchanged ranges
+- Exact changed-text emphasis inside paired red/green lines
 - Temporary hidden and reviewed file lists under **Review**
 - A **Save review…** action that exports the current view as plaintext
 - Reviewed-files save and print actions
@@ -82,17 +83,29 @@ The browser warns before closing a page that contains notes that have not been e
 Reopening the web viewer creates a new snapshot and does not restore notes from the old
 page.
 
-## Expandable file context
+## Inline context expansion
 
-Open **File context** beneath any active or expanded hidden change to inspect nearby lines
-from both TEST and DEV. The initial view includes ten lines above and below the changed range.
-Use **Show 10 more above** or **Show 10 more below** repeatedly to expand in chunks until the
-start or end of the file is reached.
+Long unchanged ranges are collapsed directly inside the main diff. A gray row with an `↑` or
+`↓` control appears where aligned context was omitted. Each click reveals another ten lines
+closest to the change, and repeated clicks can continue until the neighboring change or file
+boundary is reached.
 
-Context is loaded from the immutable snapshot captured when the web viewer opened. It does not
-reread the working tree. Context expansion is intentionally temporary: moving to another file
-clears all expanded-context ranges, so returning to the file starts compact again. Notes and
-review status are not cleared by file navigation.
+Only equal TEST/DEV lines are exposed as expandable context. The server calculates each gap
+from the immutable launch-time snapshot and refuses arbitrary paths or ranges, so expansion
+cannot become a general file browser. Moving to another file clears all expanded gap state;
+returning to the file starts compact again. Notes and reviewed/hidden status are unaffected.
+
+## Exact changed-text emphasis
+
+When a removed line and an added line are similar enough to pair safely, the viewer emphasizes
+the exact changed token inside the existing red and green line colors. For example,
+`iesp-test-east` and `iesp-dev-east` emphasize only `test` and `dev`. Pairing is conservative
+and monotonic; unrelated lines remain ordinary whole-line additions and removals.
+
+The terminal uses the same computed ranges with bold plus underline, because bold alone is not
+reliably visible across terminal themes. Plaintext exports remain literal and do not insert
+formatting characters into configuration values.
+
 
 ## Temporary file review workflow
 
@@ -168,8 +181,8 @@ The viewer remains conservative:
 - The URL contains a random token and the server returns `404` for every other path.
 - There are no endpoints for edits, merges, commands, notes, exports, or arbitrary file
   writes.
-- Read-only endpoints return Git metadata or bounded nearby lines only for a known snapshot
-  change identifier.
+- Read-only endpoints return Git metadata or bounded aligned context gaps only for a known
+  snapshot identifier.
 - Plaintext export is performed by the browser only after an explicit save action.
 - The server exposes rendered diff data only; it cannot browse arbitrary filesystem paths.
 - All HTML, CSS, and JavaScript is embedded. It loads no external assets and sends no
