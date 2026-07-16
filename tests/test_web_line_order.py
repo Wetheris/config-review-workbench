@@ -3,9 +3,38 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from config_review.core import AppSettings
+import pytest
+
+from config_review.core import AppSettings, compute_filter_result
 from config_review.web_view import _build_web_diff_snapshot, build_web_diff_snapshot
 from config_review.workbench import Workbench
+
+
+ADJACENT_MOVED_TEST_YAML = """\
+imagePullSecrets:
+  - name: oex-eose-gitlab-grpdeploy-pull-secret
+deployment:
+  env:
+    - name: SPRING_APPLICATION_NAME
+      value: "dnc-cutover-service"
+    - name: SPRING_PROFILES_ACTIVE
+      value: "prod"
+    - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+      value: "file:/app/config/application-extra.yml"
+"""
+
+ADJACENT_MOVED_DEV_YAML = """\
+imagePullSecrets:
+  - name: oex-eose-gitlab-grpdeploy-pull-secret
+deployment:
+  env:
+    - name: SPRING_PROFILES_ACTIVE
+      value: "prod,seed"
+    - name: SPRING_CONFIG_ADDITIONAL_LOCATION
+      value: "file:/app/config/application-extra.yml"
+    - name: SPRING_APPLICATION_NAME
+      value: "dnc-cutover-service"
+"""
 
 
 def _settings(root: Path) -> AppSettings:
@@ -183,3 +212,89 @@ def test_focused_expanded_web_snapshot_never_moves_line_numbers_backward(
     assert sorted(fully_expanded_dev) == expected_dev
     assert len(fully_expanded_test) == len(set(fully_expanded_test))
     assert len(fully_expanded_dev) == len(set(fully_expanded_dev))
+
+
+def test_engine_reconciles_adjacent_moved_named_items_as_one_value_change() -> None:
+    """The semantic engine already understands the real change correctly."""
+    result = compute_filter_result(
+        ADJACENT_MOVED_TEST_YAML,
+        ADJACENT_MOVED_DEV_YAML,
+        [],
+        "values.yaml",
+        hide_mapping_order=True,
+    )
+
+    assert len(result.visible) == 1
+    change = result.visible[0]
+    assert change.old_lines == [
+        "    - name: SPRING_PROFILES_ACTIVE",
+        '      value: "prod"',
+    ]
+    assert change.new_lines == [
+        "    - name: SPRING_PROFILES_ACTIVE",
+        '      value: "prod,seed"',
+    ]
+    assert all(
+        "SPRING_CONFIG_ADDITIONAL_LOCATION" not in line
+        for line in [*change.old_lines, *change.new_lines]
+    )
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Known web fallback bug: preserving physical line order disables keyed-list "
+        "reconciliation for the entire file, splitting one logical value change into "
+        "two add/delete panels and repeating an unchanged adjacent named item."
+    ),
+)
+def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
+    tmp_path: Path,
+) -> None:
+    """The browser should keep semantic change identity without corrupting line order."""
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (target / "values.yaml").write_text(ADJACENT_MOVED_TEST_YAML, encoding="utf-8")
+    (source / "values.yaml").write_text(ADJACENT_MOVED_DEV_YAML, encoding="utf-8")
+
+    snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(
+        Workbench(_settings(root))
+    )
+    focused_expanded = snapshot["files"][0]["focusedExpanded"]
+
+    # The physical file timeline must stay trustworthy.
+    _assert_strictly_increasing(_line_numbers(focused_expanded, "TEST"), "TEST")
+    _assert_strictly_increasing(_line_numbers(focused_expanded, "DEV"), "DEV")
+
+    fully_expanded_test = _fully_expanded_line_numbers(
+        focused_expanded, context_lookup, "TEST"
+    )
+    fully_expanded_dev = _fully_expanded_line_numbers(
+        focused_expanded, context_lookup, "DEV"
+    )
+    assert sorted(fully_expanded_test) == list(
+        range(1, len(ADJACENT_MOVED_TEST_YAML.splitlines()) + 1)
+    )
+    assert sorted(fully_expanded_dev) == list(
+        range(1, len(ADJACENT_MOVED_DEV_YAML.splitlines()) + 1)
+    )
+
+    # The active-review model should still expose only the real value change.
+    assert focused_expanded["visibleChanges"] == 1
+    assert len(focused_expanded["changes"]) == 1
+    change = focused_expanded["changes"][0]
+    assert change["oldLines"] == [
+        "    - name: SPRING_PROFILES_ACTIVE",
+        '      value: "prod"',
+    ]
+    assert change["newLines"] == [
+        "    - name: SPRING_PROFILES_ACTIVE",
+        '      value: "prod,seed"',
+    ]
+    assert all(
+        "SPRING_CONFIG_ADDITIONAL_LOCATION" not in line
+        for line in [*change["oldLines"], *change["newLines"]]
+    )

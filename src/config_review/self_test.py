@@ -46,6 +46,7 @@ from .workbench import (
 from .plain import (
     format_display_line,
 )
+from .web_view import _PrivacyRedactor
 
 
 def run_regression_tests() -> int:
@@ -84,6 +85,26 @@ def run_regression_tests() -> int:
                 assert maximum_horizontal_offset([DisplayLine("short")], 4, 80, x=1) == 0
 
             check("horizontal scrolling is bounded by rendered content", test_horizontal_bounds)
+
+            def test_web_privacy_redaction() -> None:
+                redactor = _PrivacyRedactor()
+                private = redactor.redact_lines(
+                    [
+                        'password: "release-secret-123"',
+                        "owner: Example Person",
+                        "url: https://internal.example.gov/api",
+                        "replicas: 3",
+                    ]
+                )
+                assert private[0] == 'password: "[SECRET-1]"'
+                assert private[1] == "owner: [PERSON-1]"
+                assert private[2] == "url: [ENDPOINT-1]"
+                assert private[3] == "replicas: 3"
+
+            check(
+                "web privacy mode masks sensitive values but preserves ordinary structure",
+                test_web_privacy_redaction,
+            )
 
             def test_selected_diff_guide_range() -> None:
                 source_lines = [DisplayLine("▶ ACTIVE CHANGE 1/1", "selector_selected")]

@@ -14,6 +14,7 @@ from config_review.core import AppSettings
 from config_review.web_view import (
     LocalWebDiffViewer,
     _ContextGapSnapshot,
+    _PrivacyRedactor,
     _context_gap_payload,
     _open_browser_once,
     _render_page,
@@ -72,6 +73,11 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
     assert change["label"] == "Configuration value"
     assert change["oldLines"] == ["value: test"]
     assert change["newLines"] == ["value: dev"]
+    assert change["privateOldLines"] == ["value: test"]
+    assert change["privateNewLines"] == ["value: dev"]
+    assert file_data["privatePath"] == "changed.yaml"
+    assert snapshot["privateSource"] == "[DEV ROOT]"
+    assert snapshot["privateTarget"] == "[TEST ROOT]"
     assert change["testRange"] == "1"
     assert change["devRange"] == "1"
     assert len(change["key"]) == 24
@@ -103,7 +109,18 @@ def test_focused_snapshot_exposes_note_targets_for_hidden_differences(tmp_path: 
         assert hidden["hidden"] is True
         assert hidden["oldLines"] == ["environment: test"]
         assert hidden["newLines"] == ["environment: dev"]
+        assert hidden["privateOldLines"] == ["environment: [IDENTIFIER-1]"]
+        assert hidden["privateNewLines"] == ["environment: [IDENTIFIER-2]"]
+        assert hidden["privateLabel"] == "Configuration value"
         assert hidden["key"] == file_data["focusedExpanded"]["hiddenChanges"][0]["key"]
+        private_headers = [
+            line["privateText"]
+            for line in file_data["focusedExpanded"]["lines"]
+            if line["kind"] == "filtered_header"
+        ]
+        assert private_headers
+        assert all("test → dev" not in value for value in private_headers)
+        assert all("[REDACTED]" in value for value in private_headers)
 
 
 def test_context_gap_payload_expands_from_either_edge_and_stops_at_bounds():
@@ -118,6 +135,7 @@ def test_context_gap_payload_expands_from_either_edge_and_stops_at_bounds():
         "testLine": 5,
         "devLine": 10,
         "text": "line 1",
+        "privateText": "line 1",
         "kind": "context",
         "emphasisRanges": [],
     }
@@ -133,6 +151,79 @@ def test_context_gap_payload_expands_from_either_edge_and_stops_at_bounds():
     expanded = _context_gap_payload(snapshot, count=100, edge="start")
     assert expanded["count"] == 30
     assert expanded["hasMore"] is False
+
+
+def test_privacy_redactor_masks_sensitive_values_and_person_references():
+    redactor = _PrivacyRedactor()
+    original = [
+        'password: "same-secret-123"',
+        'backupPassword: "same-secret-123"',
+        'url: "https://internal.example.gov/api"',
+        "owner: Sam Wetherill",
+        "email: sam@example.com",
+        "replicas: 3",
+        "name: SPRING_PROFILES_ACTIVE",
+        'value: "prod,seed"',
+        "  - name: DB_PASSWORD",
+        '    value: "database-password-456"',
+        "      secretKeyRef:",
+        "        name: database-secret",
+        "        key: password",
+    ]
+
+    private = redactor.redact_lines(original)
+
+    assert private[0] == 'password: "[SECRET-1]"'
+    assert private[1] == 'backupPassword: "[SECRET-1]"'
+    assert private[2] == 'url: "[ENDPOINT-1]"'
+    assert private[3] == "owner: [PERSON-1]"
+    assert private[4] == "email: [PERSON-2]"
+    assert private[5] == "replicas: 3"
+    assert private[6] == "name: SPRING_PROFILES_ACTIVE"
+    assert private[7] == 'value: "prod,seed"'
+    assert private[8] == "  - name: DB_PASSWORD"
+    assert private[9] == '    value: "[SECRET-2]"'
+    assert private[10] == "      secretKeyRef:"
+    assert private[11] == "        name: [REFERENCE-1]"
+    assert private[12] == "        key: [REFERENCE-2]"
+
+
+def test_web_snapshot_precomputes_redacted_diff_text(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.yaml").write_text(
+        'password: "dev-secret-123"\nowner: Dev Person\nurl: https://dev.example.gov/api\n',
+        encoding="utf-8",
+    )
+    (target / "values.yaml").write_text(
+        'password: "test-secret-456"\nowner: Test Person\nurl: https://test.example.gov/api\n',
+        encoding="utf-8",
+    )
+
+    snapshot = build_web_diff_snapshot(Workbench(_settings(root)))
+    file_data = snapshot["files"][0]
+    raw_lines = file_data["raw"]["lines"]
+    private_text = "\n".join(line["privateText"] for line in raw_lines)
+    raw_text = "\n".join(line["text"] for line in raw_lines)
+
+    assert "dev-secret-123" in raw_text
+    assert "test-secret-456" in raw_text
+    assert "Dev Person" in raw_text
+    assert "Test Person" in raw_text
+    assert "example.gov" in raw_text
+    assert "dev-secret-123" not in private_text
+    assert "test-secret-456" not in private_text
+    assert "Dev Person" not in private_text
+    assert "Test Person" not in private_text
+    assert "example.gov" not in private_text
+    assert "[SECRET-" in private_text
+    assert "[PERSON-" in private_text
+    assert "[ENDPOINT-" in private_text
+    assert "TEST/values.yaml" in private_text
+    assert "DEV/values.yaml" in private_text
 
 
 def test_snapshot_marks_exact_intraline_value_changes(tmp_path: Path):
@@ -284,6 +375,14 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "lineNumberElement" in page
     assert "Open ${label} line" in page
     assert "review-remote-links" in page
+    assert "Hide sensitive values" in page
+    assert "Show original values" in page
+    assert "privacyMode = false" in page
+    assert "display and exports are redacted" in page
+    assert "original snapshot still exists inside this local page" in page
+    assert "privateOldLines" in page
+    assert "Git context and remote links are hidden in privacy mode" in page
+    assert "Reviewer notes are hidden in privacy mode" in page
 
 
 def test_wsl_browser_launcher_uses_one_windows_command(

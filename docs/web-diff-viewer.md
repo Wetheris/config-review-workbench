@@ -33,6 +33,7 @@ The viewer provides:
 - Clickable TEST and DEV remote line links when repository metadata is available
 - Expandable hidden sections in Focused mode
 - System, dark, and light themes under **View**
+- A session-only **Hide sensitive values** privacy toggle under **View**
 - A review panel beneath every active change, plus every hidden Focused change when expanded
 - GitLab-style inline expansion for collapsed unchanged ranges
 - Exact changed-text emphasis inside paired red/green lines
@@ -47,6 +48,7 @@ Keyboard shortcuts inside the browser:
 | `[` / `]` | Previous or next changed file |
 | `f` | Focused view |
 | `r` | Raw view |
+| `p` | Toggle privacy mode |
 | `/` | Focus the filename search |
 | `e` | Expand or collapse all hidden Focused sections |
 
@@ -153,6 +155,40 @@ The terminal uses the same computed ranges with bold reverse-video highlighting,
 alone is not reliably visible across terminal themes. Plaintext exports remain literal and do not insert
 formatting characters into configuration values.
 
+## Privacy mode for external review
+
+Use **View → Hide sensitive values** before taking a screenshot, copying visible diff text, or
+creating a plaintext review for an external analysis tool. The `p` shortcut toggles the same
+session-only mode.
+
+Privacy mode preserves keys, syntax, line numbers, and the fact that two protected values are
+the same or different. Repeated protected values receive stable aliases such as `[SECRET-1]`,
+`[PERSON-1]`, or `[ENDPOINT-1]` for the lifetime of that viewer snapshot. It recognizes common:
+
+- credential keys and long token-like values;
+- URLs, hosts, IP addresses, email addresses, UUIDs, and local user-directory names;
+- user, owner, contact, author, assignee, principal, and service-account fields;
+- namespace, cluster, environment, storage, repository, and similar internal identifiers;
+- Kubernetes `secretKeyRef` and `configMapKeyRef` names and keys; and
+- environment-variable values when the preceding variable name indicates a sensitive purpose.
+
+While privacy mode is on, the browser also:
+
+- removes remote-repository links from line gutters and change panels;
+- replaces Git context with an omission notice so author names and commit subjects are not shown;
+- hides reviewer-note contents and omits them from exports;
+- replaces absolute DEV and TEST roots with generic labels in exports; and
+- adds `-private` to exported filenames.
+
+Privacy mode is deliberately conservative but heuristic. A secret stored under an innocent key,
+or a person's name embedded in arbitrary prose, may not be recognized. Review the redacted output
+before sending it outside the approved environment.
+
+The toggle is **not** a security boundary. The original values remain in the local in-memory page
+so the reviewer can switch back to the normal view. Browser developer tools or the page source can
+still reveal them. Share only a privacy-mode plaintext export or screenshot; do not upload, save, or
+send the viewer HTML itself.
+
 
 ## Temporary file review workflow
 
@@ -231,6 +267,8 @@ The viewer remains conservative:
 - Read-only endpoints return Git metadata or bounded aligned context gaps only for a known
   snapshot identifier.
 - Plaintext export is performed by the browser only after an explicit save action.
+- Privacy-mode exports contain the precomputed redacted values and omit Git context and notes, but
+  the live local page still contains the original snapshot so the mode can be toggled off.
 - The server exposes rendered diff data only; it cannot browse arbitrary filesystem paths.
 - All HTML, CSS, and JavaScript is embedded. It loads no external assets and sends no
   telemetry.

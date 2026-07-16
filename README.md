@@ -225,7 +225,12 @@ files. The left side is a searchable directory tree; selecting a file opens its 
 Use **Focused** for the same filtered quick-review presentation used by the terminal, or
 **Raw** for the complete literal TEST-to-DEV diff. Previous/next buttons and `[` / `]`
 move between changed files. Hidden Focused sections can be expanded individually, and the
-View menu provides system, dark, and light themes.
+View menu provides system, dark, and light themes plus a session-only **Hide sensitive
+values** privacy toggle. Privacy mode substitutes stable aliases for recognized credentials,
+endpoints, personal references, and other sensitive values; hides Git context, remote links,
+and reviewer notes; and applies the same redaction to plaintext exports. This is a sharing aid,
+not a complete secret scanner: share a privacy-mode export or screenshot, never the viewer HTML,
+because the original local snapshot remains inside the page so the toggle can be reversed.
 
 Removed and added lines keep their full red/green treatment, while the exact changed text
 is emphasized inside the line. The browser uses bold spans with a stronger background; the

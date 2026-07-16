@@ -13,15 +13,17 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import subprocess
 import threading
 import webbrowser
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .core import (
@@ -58,9 +60,237 @@ class _ContextGapSnapshot:
     test_start: int
     dev_start: int
     lines: tuple[str, ...]
+    private_lines: tuple[str, ...] = ()
 
 
 ContextLookup = dict[str, _ContextGapSnapshot]
+
+
+_PRIVACY_YAML_ASSIGNMENT_RE = re.compile(
+    r"^(?P<prefix>\s*(?:-\s*)?[\"']?(?P<key>[A-Za-z0-9_.-]+)[\"']?\s*:\s*)(?P<value>.*)$"
+)
+_PRIVACY_ENV_ASSIGNMENT_RE = re.compile(
+    r"^(?P<prefix>\s*(?:export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*)(?P<value>.*)$"
+)
+_PRIVACY_ENV_NAME_RE = re.compile(
+    r"^(?P<indent>\s*)-\s*name\s*:\s*(?P<value>.*?)\s*$",
+    re.IGNORECASE,
+)
+_PRIVACY_REF_SECTION_RE = re.compile(
+    r"^(?P<indent>\s*)(?:secretKeyRef|configMapKeyRef|secretRef|configMapRef)\s*:\s*$",
+    re.IGNORECASE,
+)
+_PRIVACY_EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![A-Za-z0-9.-])"
+)
+_PRIVACY_URL_RE = re.compile(r"(?i)\b(?:[a-z][a-z0-9+.-]*:){1,2}//[^\s\"'<>]+")
+_PRIVACY_IPV4_RE = re.compile(
+    r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?::\d+)?(?![\d.])"
+)
+_PRIVACY_HOST_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9.-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,}|local)(?::\d+)?(?![A-Za-z0-9.-])"
+)
+_PRIVACY_UUID_RE = re.compile(
+    r"(?i)(?<![0-9a-f])[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![0-9a-f])"
+)
+_PRIVACY_LONG_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9+/=_-])(?=[A-Za-z0-9+/=_-]{28,}(?![A-Za-z0-9+/=_-]))"
+    r"(?=[A-Za-z0-9+/=_-]*[A-Za-z])(?=[A-Za-z0-9+/=_-]*\d)"
+    r"[A-Za-z0-9+/=_-]{28,}(?![A-Za-z0-9+/=_-])"
+)
+_PRIVACY_AUTH_RE = re.compile(r"(?i)\b(?P<scheme>Bearer|Basic)\s+(?P<value>[A-Za-z0-9._~+/=-]+)")
+_PRIVACY_UNIX_USER_PATH_RE = re.compile(r"(?P<prefix>/(?:home|Users)/)(?P<user>[^/\s]+)")
+_PRIVACY_WINDOWS_USER_PATH_RE = re.compile(r"(?i)(?P<prefix>\b[A-Z]:\\Users\\)(?P<user>[^\\\s]+)")
+
+_PRIVACY_SECRET_KEY_RE = re.compile(
+    r"(?:^|[_.-])(?:password|passwd|passphrase|token|secret|api.?key|private.?key|access.?key|credential|auth(?:entication|orization)?|certificate|cert|keystore|truststore)(?:$|[_.-])",
+    re.IGNORECASE,
+)
+_PRIVACY_PERSON_KEY_RE = re.compile(
+    r"(?:^|[_.-])(?:user(?:name)?|owner|author|contact|assignee|requeste[dr]|reviewer|manager|employee|person|principal|first.?name|last.?name|full.?name|display.?name|email|mail|service.?account)(?:$|[_.-])",
+    re.IGNORECASE,
+)
+_PRIVACY_ENDPOINT_KEY_RE = re.compile(
+    r"(?:^|[_.-])(?:url|uri|host(?:name)?|domain|endpoint|address|ip|server|proxy|route|ingress)(?:$|[_.-])",
+    re.IGNORECASE,
+)
+_PRIVACY_RESOURCE_KEY_RE = re.compile(
+    r"(?:^|[_.-])(?:bucket|database|db|schema|table|topic|queue|index|repository|repo|registry|path|mount|volume|claim)(?:$|[_.-])",
+    re.IGNORECASE,
+)
+_PRIVACY_IDENTITY_KEY_RE = re.compile(
+    r"(?:^|[_.-])(?:namespace|cluster|region|environment|profile|site|location|tenant|subscription|account|project|client.?id|application.?id)(?:$|[_.-])",
+    re.IGNORECASE,
+)
+
+
+class _PrivacyRedactor:
+    """Build stable session-only aliases for sensitive browser text.
+
+    Privacy mode is intentionally a sharing aid rather than a secret scanner or
+    security boundary. The unredacted snapshot remains available in the local
+    page so the reviewer can toggle the original view back on. Exports generated
+    while privacy mode is enabled use only these redacted values.
+    """
+
+    def __init__(self) -> None:
+        self._aliases: dict[tuple[str, str], str] = {}
+        self._counts: defaultdict[str, int] = defaultdict(int)
+
+    def alias(self, kind: str, value: str) -> str:
+        normalized = value.strip()
+        key = (kind, normalized)
+        if key not in self._aliases:
+            self._counts[kind] += 1
+            self._aliases[key] = f"[{kind}-{self._counts[kind]}]"
+        return self._aliases[key]
+
+    @staticmethod
+    def _scalar_value(value: str) -> str:
+        value = value.strip().rstrip(",")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            return value[1:-1]
+        return value
+
+    @staticmethod
+    def _key_kind(key: str) -> str | None:
+        normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+        if _PRIVACY_SECRET_KEY_RE.search(normalized):
+            return "SECRET"
+        if _PRIVACY_PERSON_KEY_RE.search(normalized):
+            return "PERSON"
+        if _PRIVACY_ENDPOINT_KEY_RE.search(normalized):
+            return "ENDPOINT"
+        if _PRIVACY_RESOURCE_KEY_RE.search(normalized):
+            return "RESOURCE"
+        if _PRIVACY_IDENTITY_KEY_RE.search(normalized):
+            return "IDENTIFIER"
+        return None
+
+    def _replace_assignment_value(self, prefix: str, value: str, kind: str) -> str:
+        leading = value[: len(value) - len(value.lstrip())]
+        stripped = value.strip()
+        if not stripped:
+            return prefix + value
+
+        comment = ""
+        comment_match = re.search(r"\s+#.*$", stripped)
+        if comment_match:
+            comment = stripped[comment_match.start() :]
+            stripped = stripped[: comment_match.start()].rstrip()
+
+        comma = "," if stripped.endswith(",") else ""
+        if comma:
+            stripped = stripped[:-1].rstrip()
+        quote = (
+            stripped[0]
+            if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}
+            else ""
+        )
+        raw_value = stripped[1:-1] if quote else stripped
+        if raw_value in {"", "{}", "[]"}:
+            return prefix + value
+        alias = self.alias(kind, raw_value)
+        replacement = f"{quote}{alias}{quote}{comma}{comment}"
+        return prefix + leading + replacement
+
+    def _redact_patterns(self, text: str) -> str:
+        text = _PRIVACY_AUTH_RE.sub(
+            lambda match: f"{match.group('scheme')} {self.alias('TOKEN', match.group('value'))}",
+            text,
+        )
+        text = _PRIVACY_EMAIL_RE.sub(lambda match: self.alias("EMAIL", match.group(0)), text)
+        text = _PRIVACY_URL_RE.sub(lambda match: self.alias("URL", match.group(0)), text)
+        text = _PRIVACY_IPV4_RE.sub(lambda match: self.alias("IP", match.group(0)), text)
+        text = _PRIVACY_HOST_RE.sub(lambda match: self.alias("HOST", match.group(0)), text)
+        text = _PRIVACY_UUID_RE.sub(lambda match: self.alias("ID", match.group(0)), text)
+        text = _PRIVACY_LONG_TOKEN_RE.sub(lambda match: self.alias("TOKEN", match.group(0)), text)
+        text = _PRIVACY_UNIX_USER_PATH_RE.sub(
+            lambda match: match.group("prefix") + self.alias("USER", match.group("user")),
+            text,
+        )
+        return _PRIVACY_WINDOWS_USER_PATH_RE.sub(
+            lambda match: match.group("prefix") + self.alias("USER", match.group("user")),
+            text,
+        )
+
+    def redact_text(self, text: str, *, forced_kind: str | None = None) -> str:
+        assignment = _PRIVACY_YAML_ASSIGNMENT_RE.match(text)
+        if assignment is None:
+            assignment = _PRIVACY_ENV_ASSIGNMENT_RE.match(text)
+        if assignment is not None:
+            kind = forced_kind or self._key_kind(assignment.group("key"))
+            if kind is not None:
+                return self._replace_assignment_value(
+                    assignment.group("prefix"),
+                    assignment.group("value"),
+                    kind,
+                )
+        if forced_kind is not None and text.strip():
+            return self.alias(forced_kind, text)
+        return self._redact_patterns(text)
+
+    def redact_path(self, path: str) -> str:
+        """Redact personal identifiers without treating file extensions as hosts."""
+        text = _PRIVACY_EMAIL_RE.sub(lambda match: self.alias("EMAIL", match.group(0)), path)
+        text = _PRIVACY_UUID_RE.sub(lambda match: self.alias("ID", match.group(0)), text)
+        text = _PRIVACY_LONG_TOKEN_RE.sub(lambda match: self.alias("TOKEN", match.group(0)), text)
+        text = _PRIVACY_UNIX_USER_PATH_RE.sub(
+            lambda match: match.group("prefix") + self.alias("USER", match.group("user")),
+            text,
+        )
+        return _PRIVACY_WINDOWS_USER_PATH_RE.sub(
+            lambda match: match.group("prefix") + self.alias("USER", match.group("user")),
+            text,
+        )
+
+    def redact_lines(self, lines: Sequence[str]) -> list[str]:
+        redacted: list[str] = []
+        pending_env: tuple[int, str] | None = None
+        reference_indent: int | None = None
+
+        for line in lines:
+            indent = len(line) - len(line.lstrip())
+            env_name = _PRIVACY_ENV_NAME_RE.match(line)
+            if env_name:
+                variable = self._scalar_value(env_name.group("value"))
+                kind = self._key_kind(variable)
+                pending_env = (len(env_name.group("indent")), kind) if kind else None
+
+            reference = _PRIVACY_REF_SECTION_RE.match(line)
+            if reference:
+                reference_indent = len(reference.group("indent"))
+            elif reference_indent is not None and line.strip() and indent <= reference_indent:
+                reference_indent = None
+
+            assignment = _PRIVACY_YAML_ASSIGNMENT_RE.match(line)
+            forced_kind: str | None = None
+            if assignment is not None:
+                key = assignment.group("key")
+                if (
+                    pending_env is not None
+                    and indent > pending_env[0]
+                    and key.lower() in {"value", "valuefrom"}
+                ):
+                    forced_kind = pending_env[1]
+                elif (
+                    reference_indent is not None
+                    and indent > reference_indent
+                    and key.lower() in {"name", "key", "namespace"}
+                ):
+                    forced_kind = "REFERENCE"
+
+            redacted.append(self.redact_text(line, forced_kind=forced_kind))
+
+            if (
+                pending_env is not None
+                and line.strip()
+                and indent <= pending_env[0]
+                and not env_name
+            ):
+                pending_env = None
+
+        return redacted
 
 
 def _running_under_wsl() -> bool:
@@ -102,14 +332,33 @@ def _open_browser_once(url: str) -> bool:
         return False
 
 
-def _display_line_payload(line: DisplayLine) -> dict[str, Any]:
-    return {
-        "text": line.text,
-        "kind": line.kind,
-        "testLine": line.test_line,
-        "devLine": line.dev_line,
-        "emphasisRanges": [list(item) for item in line.emphasis_ranges],
-    }
+def _display_lines_payload(
+    lines: Sequence[DisplayLine],
+    redactor: _PrivacyRedactor,
+) -> list[dict[str, Any]]:
+    private_lines = redactor.redact_lines([line.text for line in lines])
+    for index, line in enumerate(lines):
+        if line.kind in {"test_file_header", "dev_file_header", "file_header"}:
+            private_lines[index] = redactor.redact_path(line.text)
+        elif line.kind == "filtered_header":
+            marker, separator, detail = line.text.partition("·")
+            category = detail.split(":", 1)[0].strip() if separator else ""
+            private_lines[index] = (
+                f"{marker.rstrip()} · {category}: [REDACTED]"
+                if category
+                else "▼ FILTERED DIFF · [REDACTED]"
+            )
+    return [
+        {
+            "text": line.text,
+            "privateText": private_text,
+            "kind": line.kind,
+            "testLine": line.test_line,
+            "devLine": line.dev_line,
+            "emphasisRanges": [list(item) for item in line.emphasis_ranges],
+        }
+        for line, private_text in zip(lines, private_lines, strict=True)
+    ]
 
 
 def _presentation_preserves_physical_order(presentation: DiffPresentation) -> bool:
@@ -169,6 +418,7 @@ def _change_payload(
     record: FileRecord,
     block: ChangeBlock,
     git_lookup: GitLookup,
+    redactor: _PrivacyRedactor,
     *,
     marker_index: int | None = None,
     panel_after: int | None = None,
@@ -176,10 +426,15 @@ def _change_payload(
 ) -> dict[str, Any]:
     key = _change_key(record, block)
     git_lookup.setdefault(key, (record, block))
+    label = workbench._change_context_label(record, block)
+    private_label = redactor.redact_text(label)
+    if private_label == label and ":" in label:
+        private_label = f"{label.split(':', 1)[0]}: [REDACTED]"
     return {
         "key": key,
         "gitContextId": key,
-        "label": workbench._change_context_label(record, block),
+        "label": label,
+        "privateLabel": private_label,
         "markerIndex": marker_index,
         "panelAfter": panel_after,
         "testRange": _line_range_text(block.old_start, block.old_end),
@@ -190,6 +445,8 @@ def _change_payload(
         "devEnd": block.new_end,
         "oldLines": list(block.old_lines),
         "newLines": list(block.new_lines),
+        "privateOldLines": redactor.redact_lines(block.old_lines),
+        "privateNewLines": redactor.redact_lines(block.new_lines),
         "hidden": hidden,
         "testRemoteUrl": (
             workbench.git_file_url(
@@ -285,6 +542,7 @@ def _attach_inline_context_gaps(
     hidden_changes: list[dict[str, Any]],
     context_lookup: ContextLookup,
     configured_context: int,
+    redactor: _PrivacyRedactor,
 ) -> None:
     payload_by_key = {payload["key"]: payload for payload in [*changes, *hidden_changes]}
     canonical = sorted(presentation.filter_result.blocks, key=_block_sort_key)
@@ -308,6 +566,7 @@ def _attach_inline_context_gaps(
                 test_start=test_start,
                 dev_start=dev_start,
                 lines=lines,
+                private_lines=tuple(redactor.redact_lines(lines)),
             ),
         )
         previous_payload = (
@@ -336,6 +595,7 @@ def _presentation_payload(
     presentation: DiffPresentation,
     git_lookup: GitLookup,
     context_lookup: ContextLookup,
+    redactor: _PrivacyRedactor,
     *,
     physical_order_fallback: bool = False,
 ) -> dict[str, Any]:
@@ -352,6 +612,7 @@ def _presentation_payload(
             record,
             block,
             git_lookup,
+            redactor,
             marker_index=marker_index,
             panel_after=min(
                 len(presentation.lines),
@@ -370,6 +631,7 @@ def _presentation_payload(
             record,
             block,
             git_lookup,
+            redactor,
             hidden=True,
         )
         if payload["key"] in active_keys:
@@ -383,10 +645,11 @@ def _presentation_payload(
         hidden_changes,
         context_lookup,
         workbench.settings.context,
+        redactor,
     )
 
     return {
-        "lines": [_display_line_payload(line) for line in presentation.lines],
+        "lines": _display_lines_payload(presentation.lines, redactor),
         "changes": changes,
         "hiddenChanges": hidden_changes,
         "visibleChanges": presentation.visible_change_count,
@@ -406,6 +669,7 @@ def _build_web_diff_snapshot(
     files: list[dict[str, Any]] = []
     git_lookup: GitLookup = {}
     context_lookup: ContextLookup = {}
+    redactor = _PrivacyRedactor()
     for record in workbench.records:
         workbench.refresh_record(record)
         full = full_unified_diff(record, workbench.settings.context, selected_change=0)
@@ -462,6 +726,7 @@ def _build_web_diff_snapshot(
         files.append(
             {
                 "path": record.relative_path,
+                "privatePath": redactor.redact_path(record.relative_path),
                 "status": status,
                 "states": list(record.states),
                 "focused": _presentation_payload(
@@ -470,6 +735,7 @@ def _build_web_diff_snapshot(
                     focused,
                     git_lookup,
                     context_lookup,
+                    redactor,
                     physical_order_fallback=physical_order_fallback,
                 ),
                 "focusedExpanded": _presentation_payload(
@@ -478,9 +744,17 @@ def _build_web_diff_snapshot(
                     focused_expanded,
                     git_lookup,
                     context_lookup,
+                    redactor,
                     physical_order_fallback=physical_order_fallback,
                 ),
-                "raw": _presentation_payload(workbench, record, full, git_lookup, context_lookup),
+                "raw": _presentation_payload(
+                    workbench,
+                    record,
+                    full,
+                    git_lookup,
+                    context_lookup,
+                    redactor,
+                ),
                 "counts": {
                     "active": counts.active,
                     "handled": counts.handled,
@@ -502,7 +776,10 @@ def _build_web_diff_snapshot(
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": str(workbench.settings.source),
         "target": str(workbench.settings.target),
+        "privateSource": "[DEV ROOT]",
+        "privateTarget": "[TEST ROOT]",
         "gitStatus": workbench.git_status.summary,
+        "privateGitStatus": "Git context hidden in privacy mode",
         "gitLinks": {
             "available": bool(workbench.git_repository_url and workbench.git_link_commit),
             "repositoryUrl": workbench.git_repository_url,
@@ -570,6 +847,11 @@ def _context_gap_payload(
     else:
         offset = 0
     selected = snapshot.lines[offset : offset + count]
+    private_selected = (
+        snapshot.private_lines[offset : offset + count]
+        if snapshot.private_lines
+        else tuple(selected)
+    )
     return {
         "edge": edge,
         "count": count,
@@ -580,6 +862,7 @@ def _context_gap_payload(
                 "testLine": snapshot.test_start + offset + index + 1,
                 "devLine": snapshot.dev_start + offset + index + 1,
                 "text": text,
+                "privateText": private_selected[index],
                 "kind": "context",
                 "emphasisRanges": [],
             }
@@ -797,6 +1080,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .theme-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
 .hidden-row, .git-row { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 6px; }
+.privacy-row { display: grid; grid-template-columns: 1fr; gap: 5px; }
+.menu-help { color: var(--muted); font-size: 11px; line-height: 1.35; margin-top: 6px; }
+.privacy-omitted {
+  padding: 10px 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--hiddenbg);
+}
 .view-menu button { padding: 5px 7px; font-size: 12px; }
 .view-menu button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .menu-separator { height: 1px; background: var(--border); margin: 10px 0; }
@@ -1047,6 +1338,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
               <button type="button" data-theme-choice="light">Light</button>
             </div>
             <div class="menu-separator"></div>
+            <div class="menu-label">Privacy</div>
+            <div class="privacy-row">
+              <button id="privacyToggle" type="button" aria-pressed="false" title="Redact sensitive values, personal references, Git context, remote links, and reviewer notes in the display and exported reports">Hide sensitive values</button>
+            </div>
+            <div class="menu-help">Redacts the display and exports. The original snapshot still exists inside this local page, so share only a privacy-mode export or screenshot—not the HTML file.</div>
+            <div class="menu-separator"></div>
             <div class="menu-label">Hidden differences</div>
             <div class="hidden-row">
               <button id="expandHidden" type="button">Expand all</button>
@@ -1076,6 +1373,7 @@ let mode = 'focused';
 let selected = 0;
 let visible = snapshot.files.slice();
 let themeChoice = 'system';
+let privacyMode = false;
 let notesDirty = false;
 const notesByChange = new Map();
 const gitContextCache = new Map();
@@ -1106,7 +1404,23 @@ function setStatus(message, kind = '') {
 }
 
 function defaultStatus() {
+  if (privacyMode) {
+    return 'PRIVACY MODE · display and exports are redacted · original values remain inside this local page';
+  }
   return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · ${snapshot.gitLinks.status} · review state is temporary until exported`;
+}
+
+function displayFilePath(file) {
+  if (!file) return '';
+  return privacyMode ? (file.privatePath ?? '[REDACTED FILE]') : file.path;
+}
+
+function displayLineText(line) {
+  return privacyMode ? (line.privateText ?? '[REDACTED]') : line.text;
+}
+
+function displayChangeLabel(change) {
+  return privacyMode ? (change.privateLabel ?? '[REDACTED CHANGE]') : change.label;
 }
 
 function appendHighlightedText(host, text, ranges = []) {
@@ -1148,14 +1462,26 @@ function lineElement(line) {
   const row = document.createElement('div');
   row.className = 'line ' + line.kind;
   const file = currentFile();
-  const tl = lineNumberElement(line.testLine, file?.remote?.testFileUrl, 'TEST');
-  const dl = lineNumberElement(line.devLine, file?.remote?.devFileUrl, 'DEV');
+  const tl = lineNumberElement(
+    line.testLine,
+    privacyMode ? null : file?.remote?.testFileUrl,
+    'TEST',
+  );
+  const dl = lineNumberElement(
+    line.devLine,
+    privacyMode ? null : file?.remote?.devFileUrl,
+    'DEV',
+  );
   const prefix = document.createElement('div');
   prefix.className = 'prefix';
   prefix.textContent = prefixFor(line.kind);
   const code = document.createElement('div');
   code.className = 'code';
-  appendHighlightedText(code, line.text, line.emphasisRanges ?? []);
+  appendHighlightedText(
+    code,
+    displayLineText(line),
+    privacyMode ? [] : (line.emphasisRanges ?? []),
+  );
   row.append(tl, dl, prefix, code);
   return row;
 }
@@ -1163,7 +1489,7 @@ function lineElement(line) {
 function treeFrom(files) {
   const root = {folders: new Map(), files: []};
   for (const file of files) {
-    const parts = file.path.split('/');
+    const parts = displayFilePath(file).split('/');
     let node = root;
     for (const part of parts.slice(0, -1)) {
       if (!node.folders.has(part)) node.folders.set(part, {folders: new Map(), files: []});
@@ -1207,7 +1533,9 @@ function selectFile(file) {
 
 function activeFilesMatchingSearch() {
   const query = $('search').value.trim().toLowerCase();
-  return snapshot.files.filter(file => fileIsActive(file) && file.path.toLowerCase().includes(query));
+  return snapshot.files.filter(file => {
+    return fileIsActive(file) && displayFilePath(file).toLowerCase().includes(query);
+  });
 }
 
 function nextActiveAfter(file) {
@@ -1233,7 +1561,7 @@ function renderNode(node, host) {
   for (const item of node.files.sort((a, b) => a.name.localeCompare(b.name))) {
     const button = document.createElement('button');
     button.className = 'file' + (snapshot.files[selected] === item.file ? ' active' : '');
-    button.title = item.file.path;
+    button.title = displayFilePath(item.file);
     button.onclick = () => selectFile(item.file);
     const name = document.createElement('span');
     name.className = 'name';
@@ -1269,8 +1597,8 @@ function fileStateRow(file, actions) {
   row.className = 'file-state-row';
   const name = document.createElement('div');
   name.className = 'file-state-name';
-  name.textContent = file.path;
-  name.title = file.path;
+  name.textContent = displayFilePath(file);
+  name.title = displayFilePath(file);
   const actionHost = document.createElement('div');
   actionHost.className = 'file-state-actions';
   for (const action of actions) {
@@ -1321,7 +1649,7 @@ function renderReviewMenu() {
       run: () => {
         hiddenFiles.delete(file.path);
         selectFile(file);
-        setStatus(`Restored hidden file: ${file.path}`, 'success');
+        setStatus(`Restored hidden file: ${displayFilePath(file)}`, 'success');
       },
     }]),
     'No hidden files.',
@@ -1339,7 +1667,7 @@ function renderReviewMenu() {
           reviewedFiles.delete(file.path);
           reviewedAtByFile.delete(file.path);
           selectFile(file);
-          setStatus(`Marked unreviewed: ${file.path}`, 'success');
+          setStatus(`Marked unreviewed: ${displayFilePath(file)}`, 'success');
         },
       },
     ]),
@@ -1499,13 +1827,14 @@ function reviewPanel(change) {
   heading.className = 'review-heading';
   const label = document.createElement('span');
   label.className = 'review-label';
-  label.textContent = change.label;
+  label.textContent = displayChangeLabel(change);
   const ranges = document.createElement('span');
   ranges.className = 'review-ranges';
   ranges.textContent = `TEST ${change.testRange} → DEV ${change.devRange}`;
   const remoteLinks = document.createElement('span');
   remoteLinks.className = 'review-remote-links';
   for (const [side, url] of [['TEST', change.testRemoteUrl], ['DEV', change.devRemoteUrl]]) {
+    if (privacyMode) continue;
     if (!url) continue;
     const link = document.createElement('a');
     link.href = url;
@@ -1519,16 +1848,23 @@ function reviewPanel(change) {
   if (remoteLinks.childElementCount) heading.append(remoteLinks);
   heading.append(ranges);
 
-  const gitDetails = document.createElement('details');
-  gitDetails.className = 'git-context';
-  const gitSummary = document.createElement('summary');
-  gitSummary.textContent = 'Git context · show latest incoming commit message';
-  const gitContent = document.createElement('div');
-  gitContent.className = 'git-content';
-  gitDetails.append(gitSummary, gitContent);
-  gitDetails.addEventListener('toggle', () => {
-    if (gitDetails.open) loadGitContext(gitDetails, change);
-  });
+  let gitDetails;
+  if (privacyMode) {
+    gitDetails = document.createElement('div');
+    gitDetails.className = 'privacy-omitted';
+    gitDetails.textContent = 'Git context and remote links are hidden in privacy mode.';
+  } else {
+    gitDetails = document.createElement('details');
+    gitDetails.className = 'git-context';
+    const gitSummary = document.createElement('summary');
+    gitSummary.textContent = 'Git context · show latest incoming commit message';
+    const gitContent = document.createElement('div');
+    gitContent.className = 'git-content';
+    gitDetails.append(gitSummary, gitContent);
+    gitDetails.addEventListener('toggle', () => {
+      if (gitDetails.open) loadGitContext(gitDetails, change);
+    });
+  }
 
 
   const noteWrap = document.createElement('div');
@@ -1539,18 +1875,28 @@ function reviewPanel(change) {
   noteTitle.textContent = 'Deployment note';
   const noteHelp = document.createElement('span');
   noteHelp.className = 'note-help';
-  noteHelp.textContent = 'kept in this browser until Save review';
+  noteHelp.textContent = privacyMode
+    ? 'hidden and omitted from privacy-mode exports'
+    : 'kept in this browser until Save review';
   noteLabel.append(noteTitle, noteHelp);
   const textarea = document.createElement('textarea');
   textarea.className = 'review-note';
-  textarea.placeholder = 'Add context, a question, or a deployment follow-up for this change…';
-  textarea.value = notesByChange.get(change.key) ?? '';
-  textarea.addEventListener('input', () => {
-    notesByChange.set(change.key, textarea.value);
-    notesDirty = true;
-    renderTree();
-    setStatus('Unsaved reviewer notes · use Save review… to export them', 'busy');
-  });
+  if (privacyMode) {
+    textarea.disabled = true;
+    textarea.placeholder = 'Reviewer notes are hidden in privacy mode.';
+    textarea.value = (notesByChange.get(change.key) ?? '').trim()
+      ? '[Reviewer note hidden in privacy mode]'
+      : '';
+  } else {
+    textarea.placeholder = 'Add context, a question, or a deployment follow-up for this change…';
+    textarea.value = notesByChange.get(change.key) ?? '';
+    textarea.addEventListener('input', () => {
+      notesByChange.set(change.key, textarea.value);
+      notesDirty = true;
+      renderTree();
+      setStatus('Unsaved reviewer notes · use Save review… to export them', 'busy');
+    });
+  }
   noteWrap.append(noteLabel, textarea);
 
   panel.append(heading, gitDetails, noteWrap);
@@ -1640,7 +1986,11 @@ function appendFocusedLines(host, view) {
     const details = document.createElement('details');
     details.className = 'hidden-block';
     const summary = document.createElement('summary');
-    const summaryLine = {...line, text: line.text.replace(/^▼\s*/, '')};
+    const summaryLine = {
+      ...line,
+      text: line.text.replace(/^▼\s*/, ''),
+      privateText: (line.privateText ?? line.text).replace(/^▼\s*/, ''),
+    };
     summary.append(lineElement(summaryLine));
     details.append(summary);
     const body = document.createElement('div');
@@ -1677,14 +2027,16 @@ function renderDiff() {
   const view = mode === 'focused' ? (file.focusedExpanded ?? file.focused) : file.raw;
   const summaryView = mode === 'focused' ? file.focused : file.raw;
   const stateSuffix = [reviewedFiles.has(file.path) ? 'REVIEWED' : '', hiddenFiles.has(file.path) ? 'HIDDEN' : ''].filter(Boolean).join(' · ');
-  $('path').textContent = stateSuffix ? `${file.path} · ${stateSuffix}` : file.path;
+  const shownPath = displayFilePath(file);
+  $('path').textContent = stateSuffix ? `${shownPath} · ${stateSuffix}` : shownPath;
   $('focused').classList.toggle('active', mode === 'focused');
   $('raw').classList.toggle('active', mode === 'raw');
   const hidden = summaryView.noiseHidden + summaryView.whitespaceHidden + summaryView.orderHidden;
   const physicalOrderNote = summaryView.physicalOrderFallback
     ? ' · YAML moves shown at literal file positions'
     : '';
-  $('meta').textContent = `${file.status} · ${summaryView.visibleChanges} visible change${summaryView.visibleChanges === 1 ? '' : 's'}${mode === 'focused' ? ` · ${hidden} hidden (click to expand) · ${summaryView.handled} handled${physicalOrderNote}` : ''}`;
+  const privacyNote = privacyMode ? ' · PRIVACY MODE' : '';
+  $('meta').textContent = `${file.status} · ${summaryView.visibleChanges} visible change${summaryView.visibleChanges === 1 ? '' : 's'}${mode === 'focused' ? ` · ${hidden} hidden (click to expand) · ${summaryView.handled} handled${physicalOrderNote}` : ''}${privacyNote}`;
   if (!notesDirty) setStatus(defaultStatus());
 
   const host = $('diff');
@@ -1726,13 +2078,13 @@ function toggleCurrentHidden() {
   if (!file) return;
   if (hiddenFiles.has(file.path)) {
     hiddenFiles.delete(file.path);
-    setStatus(`Restored hidden file: ${file.path}`, 'success');
+    setStatus(`Restored hidden file: ${displayFilePath(file)}`, 'success');
     render();
     return;
   }
   hiddenFiles.add(file.path);
   moveAfterStateChange(file);
-  setStatus(`Hidden for this browser session: ${file.path}`, 'success');
+  setStatus(`Hidden for this browser session: ${displayFilePath(file)}`, 'success');
 }
 
 function toggleCurrentReviewed() {
@@ -1741,14 +2093,14 @@ function toggleCurrentReviewed() {
   if (reviewedFiles.has(file.path)) {
     reviewedFiles.delete(file.path);
     reviewedAtByFile.delete(file.path);
-    setStatus(`Marked unreviewed: ${file.path}`, 'success');
+    setStatus(`Marked unreviewed: ${displayFilePath(file)}`, 'success');
     render();
     return;
   }
   reviewedFiles.add(file.path);
   reviewedAtByFile.set(file.path, new Date().toISOString());
   moveAfterStateChange(file);
-  setStatus(`Marked reviewed: ${file.path}`, 'success');
+  setStatus(`Marked reviewed: ${displayFilePath(file)}`, 'success');
 }
 
 function setAllHidden(open) {
@@ -1757,6 +2109,11 @@ function setAllHidden(open) {
 }
 
 function setAllGit(open) {
+  if (privacyMode) {
+    $('viewMenu').open = false;
+    setStatus('Git context stays hidden while privacy mode is enabled.', 'busy');
+    return;
+  }
   document.querySelectorAll('.git-context').forEach(details => {
     details.open = open;
     if (open) {
@@ -1772,7 +2129,8 @@ function setAllGit(open) {
 
 function exportFilename() {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-  return `config-review-${mode}-${stamp}.txt`;
+  const privacy = privacyMode ? '-private' : '';
+  return `config-review-${mode}${privacy}-${stamp}.txt`;
 }
 
 async function chooseDestination(filename) {
@@ -1828,9 +2186,10 @@ async function buildPlaintextReview(
     `Generated: ${new Date().toLocaleString()}`,
     `Snapshot:  ${snapshot.generatedAt}`,
     `View:      ${mode === 'focused' ? 'Focused Diff' : 'Raw Diff'}`,
-    `TEST:      ${snapshot.target}`,
-    `DEV:       ${snapshot.source}`,
-    `Git:       ${snapshot.gitStatus}`,
+    `Privacy:   ${privacyMode ? 'ON — sensitive values, personal references, Git context, remote links, and reviewer notes omitted or redacted' : 'OFF'}`,
+    `TEST:      ${privacyMode ? snapshot.privateTarget : snapshot.target}`,
+    `DEV:       ${privacyMode ? snapshot.privateSource : snapshot.source}`,
+    `Git:       ${privacyMode ? snapshot.privateGitStatus : snapshot.gitStatus}`,
     '',
   ];
   let exportedChanges = 0;
@@ -1841,7 +2200,7 @@ async function buildPlaintextReview(
     if (!changes.length && !includeEmptyFiles) continue;
     exportedFiles++;
     lines.push('#'.repeat(80));
-    lines.push(`FILE: ${file.path}`);
+    lines.push(`FILE: ${displayFilePath(file)}`);
     lines.push(`STATUS: ${file.status}`);
     if (reviewedFiles.has(file.path)) {
       const reviewedAt = reviewedAtByFile.get(file.path);
@@ -1859,23 +2218,35 @@ async function buildPlaintextReview(
     for (let index = 0; index < changes.length; index++) {
       const change = changes[index];
       exportedChanges++;
-      lines.push(`${index + 1}. ${change.label}${change.hidden ? ' [hidden in Focused view; included because it has a note]' : ''}`);
+      const hiddenSuffix = change.hidden
+        ? (privacyMode
+          ? ' [hidden in Focused view]'
+          : ' [hidden in Focused view; included because it has a note]')
+        : '';
+      lines.push(`${index + 1}. ${displayChangeLabel(change)}${hiddenSuffix}`);
       lines.push('-'.repeat(80));
       lines.push(`TEST ${change.testRange} -> DEV ${change.devRange}`);
       lines.push('');
-      for (const value of change.oldLines) lines.push(`- ${value}`);
-      for (const value of change.newLines) lines.push(`+ ${value}`);
+      const oldLines = privacyMode ? (change.privateOldLines ?? []) : change.oldLines;
+      const newLines = privacyMode ? (change.privateNewLines ?? []) : change.newLines;
+      for (const value of oldLines) lines.push(`- ${value}`);
+      for (const value of newLines) lines.push(`+ ${value}`);
       if (!change.oldLines.length && !change.newLines.length) lines.push('  (No literal lines available for this logical change.)');
       lines.push('');
-      const context = await getGitContext(change);
       lines.push('Git context:');
-      lines.push(...formatCommitLines('Incoming DEV', context.dev));
-      lines.push(...formatCommitLines('Current TEST', context.test));
-      if (context.error) lines.push(`    Warning: ${context.error}`);
+      if (privacyMode) {
+        lines.push('  (omitted in privacy mode)');
+      } else {
+        const context = await getGitContext(change);
+        lines.push(...formatCommitLines('Incoming DEV', context.dev));
+        lines.push(...formatCommitLines('Current TEST', context.test));
+        if (context.error) lines.push(`    Warning: ${context.error}`);
+      }
       lines.push('');
       const note = (notesByChange.get(change.key) ?? '').trim();
       lines.push('Reviewer note:');
-      if (note) lines.push(...note.split(/\r?\n/).map(value => `  ${value}`));
+      if (privacyMode) lines.push('  (omitted in privacy mode)');
+      else if (note) lines.push(...note.split(/\r?\n/).map(value => `  ${value}`));
       else lines.push('  (none)');
       lines.push('');
     }
@@ -1933,7 +2304,12 @@ async function saveReport({
     setStatus('Save cancelled; temporary review state remains in this browser.', '');
     return;
   }
-  setStatus('Collecting Git context and building plaintext review…', 'busy');
+  setStatus(
+    privacyMode
+      ? 'Building redacted plaintext review…'
+      : 'Collecting Git context and building plaintext review…',
+    'busy',
+  );
   try {
     const text = await buildPlaintextReview(files, {title, includeEmptyFiles});
     if (text === null) {
@@ -1942,7 +2318,10 @@ async function saveReport({
     }
     const savedName = await writeReview(destination, text, filename);
     if (clearNotesDirty) notesDirty = false;
-    setStatus(`Saved plaintext review: ${savedName}`, 'success');
+    setStatus(
+      `${privacyMode ? 'Saved redacted plaintext review' : 'Saved plaintext review'}: ${savedName}`,
+      'success',
+    );
   } catch (error) {
     setStatus(`Could not save review: ${error.message}`, 'error');
   }
@@ -1953,7 +2332,7 @@ async function saveReview() {
     files: snapshot.files,
     filename: exportFilename(),
     title: 'CONFIG REVIEW WORKBENCH',
-    clearNotesDirty: true,
+    clearNotesDirty: !privacyMode,
   });
 }
 
@@ -1963,9 +2342,10 @@ function reviewedReportFiles() {
 
 async function saveReviewedReport() {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const privacy = privacyMode ? '-private' : '';
   await saveReport({
     files: reviewedReportFiles(),
-    filename: `config-review-reviewed-${mode}-${stamp}.txt`,
+    filename: `config-review-reviewed-${mode}${privacy}-${stamp}.txt`,
     title: 'CONFIG REVIEW WORKBENCH — REVIEWED FILES',
     includeEmptyFiles: true,
   });
@@ -1977,7 +2357,12 @@ async function printReviewedReport() {
     setStatus('No files are marked reviewed; nothing was printed.', 'error');
     return;
   }
-  setStatus('Collecting Git context and preparing reviewed-files printout…', 'busy');
+  setStatus(
+    privacyMode
+      ? 'Preparing redacted reviewed-files printout…'
+      : 'Collecting Git context and preparing reviewed-files printout…',
+    'busy',
+  );
   try {
     const text = await buildPlaintextReview(files, {
       title: 'CONFIG REVIEW WORKBENCH — REVIEWED FILES',
@@ -1993,6 +2378,24 @@ async function printReviewedReport() {
   } catch (error) {
     setStatus(`Could not print reviewed report: ${error.message}`, 'error');
   }
+}
+
+function applyPrivacyMode() {
+  const button = $('privacyToggle');
+  button.classList.toggle('active', privacyMode);
+  button.setAttribute('aria-pressed', privacyMode ? 'true' : 'false');
+  button.textContent = privacyMode ? 'Show original values' : 'Hide sensitive values';
+  $('expandGit').disabled = privacyMode;
+  $('collapseGit').disabled = privacyMode;
+  $('viewMenu').open = false;
+  gapStateById.clear();
+  render();
+  setStatus(defaultStatus(), privacyMode ? 'busy' : '');
+}
+
+function togglePrivacyMode() {
+  privacyMode = !privacyMode;
+  applyPrivacyMode();
 }
 
 $('search').addEventListener('input', render);
@@ -2015,6 +2418,7 @@ $('expandHidden').onclick = () => setAllHidden(true);
 $('collapseHidden').onclick = () => setAllHidden(false);
 $('expandGit').onclick = () => setAllGit(true);
 $('collapseGit').onclick = () => setAllGit(false);
+$('privacyToggle').onclick = togglePrivacyMode;
 document.querySelectorAll('[data-theme-choice]').forEach(button => {
   button.onclick = () => {
     themeChoice = button.dataset.themeChoice;
@@ -2035,6 +2439,8 @@ document.addEventListener('keydown', event => {
   } else if (event.key === 'r') {
     mode = 'raw';
     renderDiff();
+  } else if (event.key.toLowerCase() === 'p') {
+    togglePrivacyMode();
   } else if (event.key === '/') {
     $('search').focus();
     event.preventDefault();
@@ -2050,7 +2456,7 @@ window.addEventListener('beforeunload', event => {
   event.returnValue = '';
 });
 applyTheme();
-render();
+applyPrivacyMode();
 </script>
 </body>
 </html>"""
