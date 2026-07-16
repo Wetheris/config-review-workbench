@@ -2802,6 +2802,30 @@ class Tui:
             return None
         return candidate
 
+    def _prompt_text(
+        self,
+        stdscr: Any,
+        prompt: str,
+        current: str = "",
+    ) -> str | None:
+        """Temporarily leave curses and collect one plain text value."""
+        curses.def_prog_mode()
+        curses.endwin()
+        try:
+            print("\nCONFIG REVIEW WORKBENCH — GIT LINKS")
+            print("Press Enter to keep the current value. Ctrl+C cancels.")
+            if current:
+                print(f"Current: {current}")
+            try:
+                raw = input(f"{prompt}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                self.status = "Git-link change canceled."
+                return None
+        finally:
+            curses.reset_prog_mode()
+            stdscr.refresh()
+        return raw or current
+
     def _switch_comparison_paths(
         self,
         stdscr: Any,
@@ -2950,6 +2974,80 @@ class Tui:
                 else:
                     return
 
+    def git_links_screen(self, stdscr: Any) -> None:
+        items = [
+            (
+                "Set full repository URL",
+                "Override auto-detection with a complete https://host/group/project URL.",
+            ),
+            (
+                "Use auto-detected Git remote",
+                "Clear the local override and derive the web URL from the tracking remote.",
+            ),
+            ("Back", "Return to Configure."),
+        ]
+        selected = 0
+        while True:
+            stdscr.erase()
+            height, width = stdscr.getmaxyx()
+            self._add(stdscr, 1, 2, "GIT LINKS", curses.A_BOLD | self._color_pair(5))
+            source = self.workbench.git_repository_url_source
+            configured = self.workbench.git_repository_url or "Not available"
+            self._add(stdscr, 3, 2, f"Repository: {configured}")
+            self._add(stdscr, 4, 2, f"Source:     {source}", curses.A_DIM)
+            self._add(stdscr, 5, 2, self.workbench.git_link_status_text, curses.A_DIM)
+            for index, (label, description) in enumerate(items):
+                y = 8 + index * 2
+                attr = curses.A_REVERSE if index == selected else 0
+                self._add(stdscr, y, 2, f"  {label}", attr | curses.A_BOLD)
+                if width >= 68:
+                    self._add(stdscr, y + 1, 4, description, attr)
+            self._draw_footer(
+                stdscr,
+                height - 1,
+                1,
+                "Navigate: [↑/↓]select  [Enter]open  [b]ack",
+            )
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("b"), ord("B"), 27, ord("q"), ord("Q")):
+                return
+            if key in (curses.KEY_UP, ord("k")):
+                selected = (selected - 1) % len(items)
+            elif key in (curses.KEY_DOWN, ord("j")):
+                selected = (selected + 1) % len(items)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if selected == 0:
+                    if self.workbench.settings.dry_run:
+                        self.status = "Dry-run mode: Git-link configuration is disabled."
+                        continue
+                    current = (
+                        self.workbench.git_repository_url
+                        if self.workbench.git_repository_url_source == "configured"
+                        else ""
+                    )
+                    value = self._prompt_text(
+                        stdscr,
+                        "Full repository URL",
+                        current or "",
+                    )
+                    if value is None:
+                        continue
+                    try:
+                        self.status = self.workbench.set_git_repository_url(value)
+                    except WorkbenchError as exc:
+                        self.status = str(exc)
+                elif selected == 1:
+                    if self.workbench.settings.dry_run:
+                        self.status = "Dry-run mode: Git-link configuration is disabled."
+                        continue
+                    try:
+                        self.status = self.workbench.set_git_repository_url(None)
+                    except WorkbenchError as exc:
+                        self.status = str(exc)
+                else:
+                    return
+
     def configure_screen(self, stdscr: Any) -> None:
         items = [
             (
@@ -2961,6 +3059,11 @@ class Tui:
                 "FILTERING",
                 "Filters",
                 "Review noise filters and display options in one submenu.",
+            ),
+            (
+                "GIT",
+                "Git links",
+                "Auto-detect or configure the repository URL used by web diff line links.",
             ),
             (
                 "PROJECT",
@@ -3027,8 +3130,10 @@ class Tui:
                 elif selected == 1:
                     self.filters_screen(stdscr)
                 elif selected == 2:
-                    self.edit_project_config(stdscr)
+                    self.git_links_screen(stdscr)
                 elif selected == 3:
+                    self.edit_project_config(stdscr)
+                elif selected == 4:
                     self.workbench.scan()
                     self.workbench.refresh_git_status(fetch_remote=True)
                     self.status = "Rescanned DEV and TEST. " + self.workbench.git_status.summary
@@ -3058,6 +3163,7 @@ class Tui:
         try:
             code = subprocess.run(command, check=False).returncode
             self.workbench.reload_config()
+            self.workbench.refresh_git_repository_url()
             self.workbench.recalculate_completion_all(reopen_manual=True)
             self.workbench.scan()
             self.status = (

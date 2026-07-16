@@ -281,6 +281,9 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Git context · show latest incoming commit message" in page
     assert "fetch(`git/${encodeURIComponent(change.gitContextId)}`" in page
     assert "createWritable" in page
+    assert "lineNumberElement" in page
+    assert "Open ${label} line" in page
+    assert "review-remote-links" in page
 
 
 def test_wsl_browser_launcher_uses_one_windows_command(

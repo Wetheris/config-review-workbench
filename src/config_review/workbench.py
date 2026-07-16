@@ -57,8 +57,11 @@ from .core import (
     find_git_root,
     git_checkout_identity,
     git_commit_context_for_range,
+    git_remote_repository_url,
+    git_repository_file_url,
     git_repository_status,
     git_uncommitted_paths,
+    load_git_repository_url,
     load_project_config,
     parse_editor_command,
     read_file_metadata,
@@ -66,6 +69,7 @@ from .core import (
     reconciled_handled_entries,
     record_handled_change,
     save_project_config,
+    save_git_repository_url,
     save_project_paths,
     symlink_component,
 )
@@ -81,6 +85,8 @@ class Workbench:
         self.settings = settings
         self.git_root = find_git_root(settings.target)
         self.git_status = git_repository_status(self.git_root, fetch_remote=True)
+        self.git_repository_url: str | None = None
+        self.git_repository_url_source = "unavailable"
         self.initial_uncommitted = git_uncommitted_paths(self.git_root)
         self.session = SessionStore(settings.source, settings.target, self.git_root)
         self.resumed_session_label: str | None = None
@@ -96,6 +102,7 @@ class Workbench:
         self._protected_summary_cache: list[ProtectedChangeSummary] | None = None
         self._review_count_cache: dict[str, tuple[str, ReviewCounts]] = {}
         self.reload_config()
+        self.refresh_git_repository_url()
         self.scan(initial=True)
 
     @property
@@ -134,7 +141,86 @@ class Workbench:
 
     def refresh_git_status(self, *, fetch_remote: bool = True) -> GitRepositoryStatus:
         self.git_status = git_repository_status(self.git_root, fetch_remote=fetch_remote)
+        self.refresh_git_repository_url()
         return self.git_status
+
+    def refresh_git_repository_url(self) -> str | None:
+        """Resolve the configured URL first, then fall back to the tracking remote."""
+        configured = load_git_repository_url(self.settings.config_file)
+        if configured:
+            self.git_repository_url = configured
+            self.git_repository_url_source = "configured"
+            return configured
+
+        remote = "origin"
+        if self.git_status.upstream and "/" in self.git_status.upstream:
+            remote = self.git_status.upstream.split("/", 1)[0]
+        detected = git_remote_repository_url(self.git_root, remote)
+        if detected is None and remote != "origin":
+            detected = git_remote_repository_url(self.git_root, "origin")
+        self.git_repository_url = detected
+        self.git_repository_url_source = "origin" if detected else "unavailable"
+        return detected
+
+    def set_git_repository_url(self, repository_url: str | None) -> str:
+        """Persist a full repository URL, or clear it to resume auto-detection."""
+        save_git_repository_url(self.settings.config_file, repository_url)
+        self.refresh_git_repository_url()
+        if self.git_repository_url_source == "configured":
+            return f"Git links now use configured repository URL: {self.git_repository_url}"
+        if self.git_repository_url:
+            return f"Git links auto-detected from origin: {self.git_repository_url}"
+        return "Git links are unavailable; no supported repository remote was detected."
+
+    @property
+    def git_link_commit(self) -> str:
+        """Prefer the exact upstream commit fetched for the startup freshness check."""
+        return self.git_status.upstream_commit or self.git_status.commit
+
+    @property
+    def git_link_status_text(self) -> str:
+        if not self.git_repository_url:
+            return "Git links unavailable — configure a full repository URL"
+        source = (
+            "configured repository URL"
+            if self.git_repository_url_source == "configured"
+            else "auto-detected origin"
+        )
+        if not self.git_link_commit:
+            return f"Git links unavailable — {source}, but no commit is available"
+        parts = [f"Git links: {source}"]
+        if self.git_status.upstream_commit:
+            if self.git_status.fetch_attempted and self.git_status.fetch_ok:
+                parts.append("fetched upstream commit")
+            else:
+                parts.append("tracking commit; remote freshness unverified")
+        else:
+            parts.append("local HEAD; remote availability unverified")
+        if self.git_status.dirty_count:
+            parts.append("local files contain uncommitted changes")
+        return " · ".join(parts)
+
+    def git_file_url(
+        self,
+        path: Path,
+        *,
+        line_start: int | None = None,
+        line_end: int | None = None,
+    ) -> str | None:
+        """Return one exact remote file permalink when Git metadata is available."""
+        if not self.git_root or not self.git_repository_url or not self.git_link_commit:
+            return None
+        try:
+            relative = path.resolve().relative_to(self.git_root.resolve()).as_posix()
+        except ValueError:
+            return None
+        return git_repository_file_url(
+            self.git_repository_url,
+            self.git_link_commit,
+            relative,
+            line_start=line_start,
+            line_end=line_end,
+        )
 
     @property
     def session_status_text(self) -> str:
@@ -253,6 +339,7 @@ class Workbench:
         self.settings.target = target
         self.git_root = find_git_root(target)
         self.git_status = git_repository_status(self.git_root, fetch_remote=True)
+        self.refresh_git_repository_url()
         self.initial_uncommitted = git_uncommitted_paths(self.git_root)
         self.session = SessionStore(source, target, self.git_root)
         self.resumed_session_label = None

@@ -177,7 +177,7 @@ you change paths, filters, or other project settings.
 | `Enter` | Open the selected file or selected difference |
 | `[` / `]` | Previous or next file |
 | `w` | Open a read-only local web snapshot of all currently changed files |
-| `c` | Open Configure for comparison paths, filters, config editing, and rescan |
+| `c` | Open Configure for comparison paths, filters, Git links, config editing, and rescan |
 | `f` | Open the Filters submenu directly |
 | `s` | Rescan DEV and TEST and refresh the Git freshness check |
 | `?` | Help |
@@ -192,6 +192,7 @@ kept out of the footer so the quick-review view stays readable.
 |---|---|
 | Comparison paths | Change the project root or set exact DEV and TEST directories |
 | Filters | Open Noise filters or Display options |
+| Git links | Auto-detect or configure the full repository URL used by web diff line links |
 | Edit project config | Open `.config-review.yaml` in the configured editor |
 | Rescan | Refresh DEV/TEST and rerun the Git freshness check |
 
@@ -230,6 +231,17 @@ Removed and added lines keep their full red/green treatment, while the exact cha
 is emphasized inside the line. The browser uses bold spans with a stronger background; the
 terminal uses bold reverse-video highlighting so small environment substitutions such as
 `test` → `dev` are visible at a glance. Unrelated lines are never forced into an intraline pair.
+
+When Git metadata is available, the TEST and DEV line numbers are links to the exact file
+and commit in the remote repository. Each change panel also provides TEST and DEV links for
+the complete changed range. The workbench first auto-detects the repository URL from the
+tracking remote. Configure → **Git links** can set a full repository URL such as
+`https://gitlab.example.com/group/project` when auto-detection is unavailable or should be
+overridden. The override is stored only in the local, Git-ignored `.config-review.yaml`.
+
+Links prefer the fetched upstream commit used by the startup freshness check. The browser
+footer warns when the remote could not be refreshed, only local HEAD is available, or local
+uncommitted files may not match the remote page.
 
 Long unchanged ranges are collapsed directly inside the web diff, similar to GitLab. Click the
 gray `↑` or `↓` row to reveal ten more aligned lines at a time. Expansion can continue until

@@ -30,6 +30,7 @@ The viewer provides:
 - **Focused**, which mirrors the workbench's current noise and display filters
 - **Raw**, which shows the complete literal text comparison
 - TEST and DEV line-number gutters
+- Clickable TEST and DEV remote line links when repository metadata is available
 - Expandable hidden sections in Focused mode
 - System, dark, and light themes under **View**
 - A review panel beneath every active change, plus every hidden Focused change when expanded
@@ -66,6 +67,39 @@ for a release change. The viewer:
 The TEST context is shown beneath DEV for comparison. Git context is local metadata from
 the checked-out repository. It does not fetch, pull, or contact a remote when a section is
 expanded.
+
+## Remote file sanity-check links
+
+When the comparison lives in Git, clickable line numbers open the corresponding TEST or DEV
+file in the remote repository at that exact line. Each change panel also includes TEST and DEV
+range links. Links open in a new browser tab so the temporary local review workspace stays
+open.
+
+The workbench does not hardcode a GitLab hostname. It resolves the repository URL in this
+order:
+
+1. `git.repository_url` from the local `.config-review.yaml`;
+2. the tracking remote associated with the current branch; and
+3. `origin` as an auto-detection fallback.
+
+Common SSH and HTTPS remotes are converted to a credential-free web URL. Configure →
+**Git links** can set the complete repository URL explicitly, for example:
+
+```yaml
+git:
+  repository_url: https://gitlab.example.com/group/project
+```
+
+Clearing that setting returns to remote auto-detection. The setting is local because
+`.config-review.yaml` is ignored by Git, so private GitLab addresses do not need to enter the
+public tool repository and a new build does not overwrite a teammate's choice.
+If a web viewer is already open, press `w` again after changing the setting to create a fresh
+snapshot containing the new links.
+
+Links prefer the exact fetched upstream commit from the startup Git freshness check. If fetch
+failed, no upstream exists, or the working tree is dirty, the link remains a useful comparison
+but the browser footer and link tooltip explain why the remote page may not match the local
+snapshot exactly. Untracked files or files outside the detected repository receive no link.
 
 ## Inline deployment notes
 

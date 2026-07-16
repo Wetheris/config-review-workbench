@@ -166,6 +166,24 @@ def _change_payload(
         "oldLines": list(block.old_lines),
         "newLines": list(block.new_lines),
         "hidden": hidden,
+        "testRemoteUrl": (
+            workbench.git_file_url(
+                record.test_path,
+                line_start=block.old_start + 1,
+                line_end=block.old_end,
+            )
+            if block.old_count
+            else None
+        ),
+        "devRemoteUrl": (
+            workbench.git_file_url(
+                record.dev_path,
+                line_start=block.new_start + 1,
+                line_end=block.new_end,
+            )
+            if block.new_count
+            else None
+        ),
     }
 
 
@@ -404,6 +422,10 @@ def _build_web_diff_snapshot(
                     "whitespaceHidden": counts.whitespace_hidden,
                     "orderHidden": counts.mapping_order_hidden,
                 },
+                "remote": {
+                    "testFileUrl": workbench.git_file_url(record.test_path),
+                    "devFileUrl": workbench.git_file_url(record.dev_path),
+                },
             }
         )
 
@@ -415,6 +437,13 @@ def _build_web_diff_snapshot(
         "source": str(workbench.settings.source),
         "target": str(workbench.settings.target),
         "gitStatus": workbench.git_status.summary,
+        "gitLinks": {
+            "available": bool(workbench.git_repository_url and workbench.git_link_commit),
+            "repositoryUrl": workbench.git_repository_url,
+            "source": workbench.git_repository_url_source,
+            "commit": workbench.git_link_commit,
+            "status": workbench.git_link_status_text,
+        },
         "files": files,
     }
     return snapshot, git_lookup, context_lookup
@@ -494,6 +523,17 @@ def _context_gap_payload(
 
 
 def _render_page(snapshot: dict[str, Any]) -> bytes:
+    snapshot = dict(snapshot)
+    snapshot.setdefault(
+        "gitLinks",
+        {
+            "available": False,
+            "repositoryUrl": None,
+            "source": "unavailable",
+            "commit": "",
+            "status": "Git links unavailable",
+        },
+    )
     encoded = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     # Prevent configuration text containing </script> from ending the data block.
     encoded = encoded.replace("</", r"<\/")
@@ -748,6 +788,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
   user-select: none;
   border-right: 1px solid var(--gutter);
 }
+.ln a {
+  color: inherit;
+  text-decoration: none;
+  display: block;
+  margin: -1px -8px;
+  padding: 1px 8px;
+}
+.ln a:hover, .ln a:focus-visible {
+  color: var(--accent);
+  background: var(--accentbg);
+  outline: none;
+}
+.ln a::after { content: ' ↗'; font-size: 9px; opacity: .65; }
 .prefix { padding: 1px 6px; text-align: center; color: var(--muted); user-select: none; }
 .code { padding: 1px 10px; white-space: pre; }
 .intraline {
@@ -800,6 +853,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .review-label { font-weight: 700; }
 .review-ranges { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.review-remote-links { display: inline-flex; gap: 7px; white-space: nowrap; }
+.review-remote-links a { color: var(--accent); text-decoration: none; font-size: 12px; }
+.review-remote-links a:hover, .review-remote-links a:focus-visible { text-decoration: underline; }
 .git-context { border-bottom: 1px solid var(--border); }
 .git-context summary { cursor: pointer; padding: 8px 12px; color: var(--accent); user-select: none; }
 .git-context[open] summary { border-bottom: 1px solid var(--border); }
@@ -984,7 +1040,7 @@ function setStatus(message, kind = '') {
 }
 
 function defaultStatus() {
-  return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · review state is temporary until exported`;
+  return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · ${snapshot.gitLinks.status} · review state is temporary until exported`;
 }
 
 function appendHighlightedText(host, text, ranges = []) {
@@ -1004,15 +1060,30 @@ function appendHighlightedText(host, text, ranges = []) {
   if (cursor < text.length) host.append(document.createTextNode(text.slice(cursor)));
 }
 
+function lineNumberElement(value, baseUrl, label) {
+  const cell = document.createElement('div');
+  cell.className = 'ln';
+  if (value == null || value === '') return cell;
+  if (!baseUrl) {
+    cell.textContent = value;
+    return cell;
+  }
+  const link = document.createElement('a');
+  link.href = `${baseUrl}#L${value}`;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = value;
+  link.title = `Open ${label} line ${value} at ${snapshot.gitLinks.commit.slice(0, 12)} · ${snapshot.gitLinks.status}`;
+  cell.append(link);
+  return cell;
+}
+
 function lineElement(line) {
   const row = document.createElement('div');
   row.className = 'line ' + line.kind;
-  const tl = document.createElement('div');
-  tl.className = 'ln';
-  tl.textContent = line.testLine ?? '';
-  const dl = document.createElement('div');
-  dl.className = 'ln';
-  dl.textContent = line.devLine ?? '';
+  const file = currentFile();
+  const tl = lineNumberElement(line.testLine, file?.remote?.testFileUrl, 'TEST');
+  const dl = lineNumberElement(line.devLine, file?.remote?.devFileUrl, 'DEV');
   const prefix = document.createElement('div');
   prefix.className = 'prefix';
   prefix.textContent = prefixFor(line.kind);
@@ -1366,7 +1437,21 @@ function reviewPanel(change) {
   const ranges = document.createElement('span');
   ranges.className = 'review-ranges';
   ranges.textContent = `TEST ${change.testRange} → DEV ${change.devRange}`;
-  heading.append(label, ranges);
+  const remoteLinks = document.createElement('span');
+  remoteLinks.className = 'review-remote-links';
+  for (const [side, url] of [['TEST', change.testRemoteUrl], ['DEV', change.devRemoteUrl]]) {
+    if (!url) continue;
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = `${side} ↗`;
+    link.title = `Open this ${side} change at the exact remote commit`;
+    remoteLinks.append(link);
+  }
+  heading.append(label);
+  if (remoteLinks.childElementCount) heading.append(remoteLinks);
+  heading.append(ranges);
 
   const gitDetails = document.createElement('details');
   gitDetails.className = 'git-context';

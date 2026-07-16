@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 try:
     import curses
@@ -524,6 +524,7 @@ class GitRepositoryStatus:
     branch: str = "no-git"
     commit: str = ""
     upstream: str = ""
+    upstream_commit: str = ""
     ahead: int = 0
     behind: int = 0
     dirty_count: int = 0
@@ -1236,6 +1237,9 @@ def git_repository_status(
             status.fetch_error = (error.splitlines()[-1] if error else "git fetch failed")[:240]
 
     if status.upstream:
+        code, upstream_commit, _ = _run_git_text(root, ["rev-parse", status.upstream])
+        if code == 0:
+            status.upstream_commit = upstream_commit
         code, counts, _ = _run_git_text(
             root,
             ["rev-list", "--left-right", "--count", f"HEAD...{status.upstream}"],
@@ -1245,6 +1249,101 @@ def git_repository_status(
             if len(fields) == 2 and all(field.isdigit() for field in fields):
                 status.ahead, status.behind = (int(fields[0]), int(fields[1]))
     return status
+
+
+def git_remote_to_web_url(remote_url: str) -> str | None:
+    """Convert one common Git remote syntax into a credential-free web URL."""
+    value = remote_url.strip()
+    if not value:
+        return None
+
+    # SCP-style SSH remotes, for example git@gitlab.example:group/project.git.
+    if "://" not in value:
+        match = re.fullmatch(r"(?:[^@/:]+@)?([^/:]+):(.+)", value)
+        if match:
+            host, path = match.groups()
+            path = path.strip("/")
+            if path.endswith(".git"):
+                path = path[:-4]
+            return f"https://{host}/{path}" if path else None
+        return None
+
+    parsed = urlsplit(value)
+    if parsed.scheme in {"http", "https"}:
+        host = parsed.hostname or ""
+        if not host:
+            return None
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        path = parsed.path.rstrip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        return f"{parsed.scheme}://{host}{port}{path}" if path else None
+
+    if parsed.scheme in {"ssh", "git"}:
+        host = parsed.hostname or ""
+        path = parsed.path.strip("/")
+        if path.endswith(".git"):
+            path = path[:-4]
+        return f"https://{host}/{path}" if host and path else None
+    return None
+
+
+def normalize_git_repository_url(repository_url: str) -> str:
+    """Validate and normalize a configured full repository web URL."""
+    value = repository_url.strip()
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise WorkbenchError(
+            "Git repository URL must be a full http:// or https:// repository URL."
+        )
+    if parsed.query or parsed.fragment:
+        raise WorkbenchError("Git repository URL cannot include a query string or fragment.")
+    host = parsed.hostname
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    path = parsed.path.rstrip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    if not path or path == "/":
+        raise WorkbenchError(
+            "Git repository URL must include the full group/project repository path."
+        )
+    return f"{parsed.scheme}://{host}{port}{path}"
+
+
+def git_remote_repository_url(git_root: Path | None, remote: str = "origin") -> str | None:
+    """Return an auto-detected repository web URL for one configured Git remote."""
+    if git_root is None:
+        return None
+    code, value, _ = _run_git_text(git_root, ["remote", "get-url", remote])
+    return git_remote_to_web_url(value) if code == 0 else None
+
+
+def git_repository_file_url(
+    repository_url: str,
+    commit: str,
+    relative_path: str,
+    *,
+    line_start: int | None = None,
+    line_end: int | None = None,
+) -> str:
+    """Build a read-only GitLab/GitHub file permalink for an exact commit."""
+    base = normalize_git_repository_url(repository_url)
+    host = (urlsplit(base).hostname or "").lower()
+    encoded_commit = quote(commit, safe="")
+    encoded_path = quote(relative_path.lstrip("/"), safe="/")
+    if host == "github.com" or host.endswith(".github.com"):
+        url = f"{base}/blob/{encoded_commit}/{encoded_path}"
+        if line_start:
+            end = line_end or line_start
+            url += f"#L{line_start}" if end == line_start else f"#L{line_start}-L{end}"
+        return url
+
+    # GitLab and self-hosted GitLab use /-/blob and #Lstart-end anchors.
+    url = f"{base}/-/blob/{encoded_commit}/{encoded_path}"
+    if line_start:
+        end = line_end or line_start
+        url += f"#L{line_start}" if end == line_start else f"#L{line_start}-{end}"
+    return url
 
 
 def _git_relative_path(git_root: Path, path: Path) -> str | None:
@@ -1431,6 +1530,11 @@ version: 9
 paths:
   source:
   target:
+
+# Optional full repository web URL used by the local web viewer for exact
+# line links. Leave blank to auto-detect from the current Git remote.
+git:
+  repository_url:
 
 scan:
   exclude_dirs:
@@ -1656,6 +1760,51 @@ def save_project_paths(path: Path, source: Path, target: Path) -> None:
         },
     )
     data.setdefault("patterns", [])
+    _yaml_write(path, data)
+
+
+def load_git_repository_url(path: Path) -> str | None:
+    """Load an optional configured full repository web URL."""
+    if not path.exists():
+        return None
+    root = _yaml_load(path) or {}
+    if not isinstance(root, Mapping):
+        raise WorkbenchError(f"Project configuration root must be a mapping: {path}")
+    git = root.get("git", {}) or {}
+    if not isinstance(git, Mapping):
+        raise WorkbenchError(f"'git' must be a mapping in {path}")
+    raw = git.get("repository_url")
+    if raw is None or not str(raw).strip():
+        return None
+    return normalize_git_repository_url(str(raw))
+
+
+def save_git_repository_url(path: Path, repository_url: str | None) -> None:
+    """Persist or clear the optional repository web URL without touching other settings."""
+    if path.exists():
+        root = _yaml_load(path) or {}
+        if not isinstance(root, Mapping):
+            raise WorkbenchError(f"Project configuration root must be a mapping: {path}")
+        data: dict[str, Any] = dict(root)
+    else:
+        data = _default_project_config_data()
+
+    try:
+        current_version = int(data.get("version", 0) or 0)
+    except (TypeError, ValueError):
+        current_version = 0
+    data["version"] = max(current_version, 9)
+
+    existing_git = data.get("git", {}) or {}
+    git: dict[str, Any] = dict(existing_git) if isinstance(existing_git, Mapping) else {}
+    if repository_url and repository_url.strip():
+        git["repository_url"] = normalize_git_repository_url(repository_url)
+    else:
+        git.pop("repository_url", None)
+    if git:
+        data["git"] = git
+    else:
+        data.pop("git", None)
     _yaml_write(path, data)
 
 
