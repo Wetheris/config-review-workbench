@@ -31,6 +31,7 @@ from .core import (
     FileRecord,
     GitCommitContext,
     WorkbenchError,
+    _is_yaml_order_continuation,
 )
 from .rendering import full_unified_diff, review_unified_diff
 
@@ -109,6 +110,30 @@ def _display_line_payload(line: DisplayLine) -> dict[str, Any]:
         "devLine": line.dev_line,
         "emphasisRanges": [list(item) for item in line.emphasis_ranges],
     }
+
+
+def _presentation_preserves_physical_order(presentation: DiffPresentation) -> bool:
+    """Return whether each file's rendered line numbers only move forward.
+
+    A moved keyed-list item can be represented as one logical replacement whose
+    TEST and DEV ranges occur at very different physical locations. That logical
+    view is useful in the terminal, but it cannot be placed on a single GitLab-
+    style file timeline without making one side's line numbers move backward.
+    The web viewer therefore falls back to the literal opcode placement for that
+    file while retaining every other Focused Diff filter.
+    """
+    previous_test = 0
+    previous_dev = 0
+    for line in presentation.lines:
+        if line.test_line is not None:
+            if line.test_line <= previous_test:
+                return False
+            previous_test = line.test_line
+        if line.dev_line is not None:
+            if line.dev_line <= previous_dev:
+                return False
+            previous_dev = line.dev_line
+    return True
 
 
 def _change_key(record: FileRecord, block: ChangeBlock) -> str:
@@ -311,6 +336,8 @@ def _presentation_payload(
     presentation: DiffPresentation,
     git_lookup: GitLookup,
     context_lookup: ContextLookup,
+    *,
+    physical_order_fallback: bool = False,
 ) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
     active_keys: set[str] = set()
@@ -336,7 +363,7 @@ def _presentation_payload(
 
     hidden_changes: list[dict[str, Any]] = []
     for block in presentation.filter_result.blocks:
-        if not block.is_hidden:
+        if not block.is_hidden or _is_yaml_order_continuation(block.hidden_by):
             continue
         payload = _change_payload(
             workbench,
@@ -368,6 +395,7 @@ def _presentation_payload(
         "whitespaceHidden": presentation.whitespace_hidden_count,
         "orderHidden": presentation.mapping_order_hidden_count,
         "orderUnavailable": presentation.mapping_order_unavailable_reason,
+        "physicalOrderFallback": physical_order_fallback,
     }
 
 
@@ -402,6 +430,34 @@ def _build_web_diff_snapshot(
             expand_filtered=True,
             selected_change=0,
         )
+        physical_order_fallback = not (
+            _presentation_preserves_physical_order(focused)
+            and _presentation_preserves_physical_order(focused_expanded)
+        )
+        if physical_order_fallback:
+            # A two-column physical file timeline cannot place one logical
+            # replacement at two crossed TEST/DEV locations. Keep the terminal's
+            # semantic reconciliation, but render this web file with literal
+            # YAML-order placement so line numbers, context, notes, and remote
+            # links remain trustworthy. Other noise/whitespace filters stay on.
+            focused = review_unified_diff(
+                record,
+                workbench.enabled_patterns,
+                workbench.settings.context,
+                hide_whitespace=workbench.hide_whitespace,
+                hide_mapping_order=False,
+                expand_filtered=False,
+                selected_change=0,
+            )
+            focused_expanded = review_unified_diff(
+                record,
+                workbench.enabled_patterns,
+                workbench.settings.context,
+                hide_whitespace=workbench.hide_whitespace,
+                hide_mapping_order=False,
+                expand_filtered=True,
+                selected_change=0,
+            )
         status, counts = workbench.file_status(record)
         files.append(
             {
@@ -409,10 +465,20 @@ def _build_web_diff_snapshot(
                 "status": status,
                 "states": list(record.states),
                 "focused": _presentation_payload(
-                    workbench, record, focused, git_lookup, context_lookup
+                    workbench,
+                    record,
+                    focused,
+                    git_lookup,
+                    context_lookup,
+                    physical_order_fallback=physical_order_fallback,
                 ),
                 "focusedExpanded": _presentation_payload(
-                    workbench, record, focused_expanded, git_lookup, context_lookup
+                    workbench,
+                    record,
+                    focused_expanded,
+                    git_lookup,
+                    context_lookup,
+                    physical_order_fallback=physical_order_fallback,
                 ),
                 "raw": _presentation_payload(workbench, record, full, git_lookup, context_lookup),
                 "counts": {
@@ -1615,7 +1681,10 @@ function renderDiff() {
   $('focused').classList.toggle('active', mode === 'focused');
   $('raw').classList.toggle('active', mode === 'raw');
   const hidden = summaryView.noiseHidden + summaryView.whitespaceHidden + summaryView.orderHidden;
-  $('meta').textContent = `${file.status} · ${summaryView.visibleChanges} visible change${summaryView.visibleChanges === 1 ? '' : 's'}${mode === 'focused' ? ` · ${hidden} hidden (click to expand) · ${summaryView.handled} handled` : ''}`;
+  const physicalOrderNote = summaryView.physicalOrderFallback
+    ? ' · YAML moves shown at literal file positions'
+    : '';
+  $('meta').textContent = `${file.status} · ${summaryView.visibleChanges} visible change${summaryView.visibleChanges === 1 ? '' : 's'}${mode === 'focused' ? ` · ${hidden} hidden (click to expand) · ${summaryView.handled} handled${physicalOrderNote}` : ''}`;
   if (!notesDirty) setStatus(defaultStatus());
 
   const host = $('diff');

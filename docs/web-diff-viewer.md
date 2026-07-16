@@ -129,6 +129,19 @@ from the immutable launch-time snapshot and refuses arbitrary paths or ranges, s
 cannot become a general file browser. Moving to another file clears all expanded gap state;
 returning to the file starts compact again. Notes and reviewed/hidden status are unaffected.
 
+### Physical line-order safeguard
+
+A uniquely named YAML list item can move to a very different location while also changing.
+The terminal can safely present that as one logical replacement, but a single GitLab-style
+two-column file timeline cannot place crossed TEST and DEV coordinates without making one
+side's line numbers move backward.
+
+When the web snapshot detects that condition, it keeps every other Focused Diff filter but
+shows YAML moves at their literal add/delete positions for that file. The browser labels this
+as **YAML moves shown at literal file positions**. This conservative fallback keeps expanded
+context, notes, Git links, and line-number gutters trustworthy instead of forcing a misleading
+semantic alignment. The terminal's logical keyed-list review remains unchanged.
+
 ## Exact changed-text emphasis
 
 When a removed line and an added line are similar enough to pair safely, the viewer emphasizes
