@@ -12,6 +12,7 @@ configurations are semantically equivalent or whether a change is safe to promot
 - A grouped file list with active, complete, filtered-only, edited, and uncommitted states
 - Focused Diff for collapsing approved environment-specific noise
 - Full Diff for viewing the complete, literal TEST and DEV text
+- A loopback-only, read-only web viewer with a changed-file tree and Focused/Raw views
 - Exact per-change actions: accept DEV, keep TEST, edit TEST, or open Vimdiff
 - Project-wide noise-filter discovery and user-controlled filtering
 - Session history, automatic progress saving, and current-run undo
@@ -32,8 +33,8 @@ Tab completion is supported when Python `readline` is available.
 
 Files are grouped by their directory structure. Expand a file with Space to inspect
 its active-change index, or press Enter to open the full Focused Diff. The footer uses
-compact rows and automatically condenses on narrower terminals; press `c` to open the
-Configure menu when you need less-common actions.
+compact rows and automatically condenses on narrower terminals; press `w` for the
+read-only web overview or `c` to open Configure for less-common actions.
 
 ![Main file list](docs/images/main-screen.png)
 
@@ -152,7 +153,7 @@ you change paths, filters, or other project settings.
    `COMPLETE` files have no remaining visible review work. Gray `FILTERED ONLY`
    files still contain differences hidden by approved filters.
 
-4. **Press Enter on a file** to open Focused Diff. Use `n` and `p` to move through
+4. **Press Enter on a file** to open Focused Diff. Use `j` and `k` to move through
    the next or previous active difference. Arrow keys and Page Up/Page Down navigate
    the current view without changing the selected block.
 
@@ -175,6 +176,7 @@ you change paths, filters, or other project settings.
 | `Space` | Expand or collapse a file's difference index |
 | `Enter` | Open the selected file or selected difference |
 | `[` / `]` | Previous or next file |
+| `w` | Open a read-only local web snapshot of all currently changed files |
 | `c` | Open Configure for comparison paths, filters, config editing, and rescan |
 | `f` | Open the Filters submenu directly |
 | `s` | Rescan DEV and TEST and refresh the Git freshness check |
@@ -214,6 +216,28 @@ Vertical and horizontal scrolling reuse the current rendered diff. The workbench
 files and rebuilds the presentation only after a file/view/filter/action change or an
 explicit rescan, so arrow-key and terminal mouse-wheel scrolling stay responsive on
 larger files.
+
+### Read-only web diff viewer
+
+Press `w` from the main file list to open a browser overview of all currently changed
+files. The left side is a searchable directory tree; selecting a file opens its diff.
+Use **Focused** for the same filtered quick-review presentation used by the terminal, or
+**Raw** for the complete literal TEST-to-DEV diff. Previous/next buttons and `[` / `]`
+move between changed files.
+
+The viewer is deliberately narrow in scope:
+
+- It is read-only and contains no merge, edit, completion, report, or configuration actions.
+- It serves an in-memory snapshot and does not reread files in the background. Reopen it
+  from the terminal to refresh after files or filters change.
+- It binds only to `127.0.0.1` on a random port and uses a random URL token.
+- HTML, CSS, and JavaScript are bundled locally; no CDN, telemetry, or external request is used.
+- Only diff presentation data is exposed. The server does not provide arbitrary file access.
+
+When a browser cannot be opened automatically, the terminal status line prints the local
+URL. Remote SSH sessions may require local port forwarding before that URL is reachable
+from your workstation. See [Read-Only Web Diff Viewer](docs/web-diff-viewer.md) for the
+exact scope and security model.
 
 ### File Actions and visible-diff reports
 
@@ -443,6 +467,7 @@ PYTHONPATH=src python3 -m config_review \
 - `core.py` — models, configuration, file safety, diff/filter engine, and sessions
 - `rendering.py` — Focused Diff, Full Diff, summaries, and presentation building
 - `workbench.py` — repository state and review actions
+- `web_view.py` — loopback-only read-only browser diff snapshot
 - `tui.py` — curses interface
 - `plain.py` — line-oriented fallback interface
 - `self_test.py` — built-in regression suite
@@ -463,6 +488,8 @@ archive.
 
 - Python 3.10 or newer is required.
 - The curses TUI is intended primarily for Linux, macOS, WSL, and SSH terminals.
+- The web viewer is available only on the machine running the workbench unless an SSH
+  tunnel or equivalent loopback forwarding is configured.
 - The tool compares configuration as text and does not determine whether a change is
   operationally correct or safe to deploy.
 - YAML order filtering requires unambiguous parseable YAML. Duplicate named list

@@ -56,6 +56,7 @@ from .rendering import (
     review_unified_diff,
     selected_change_preview,
 )
+from .web_view import LocalWebDiffViewer
 from .workbench import (
     Workbench,
 )
@@ -190,22 +191,27 @@ def footer_segments(text: str) -> list[tuple[str, str]]:
 
 def main_footer_lines(available_width: int) -> tuple[str, ...]:
     """Return a non-clipping main-screen footer for the available terminal width."""
+    if available_width >= 76:
+        return (
+            "Navigate: [j/k or ↑/↓]select  [Space]expand/collapse  [Enter]open",
+            "Actions: [w]web view  [u]undo  [c]configure  [?]help  [q]quit",
+        )
     if available_width >= 65:
         return (
             "Navigate: [j/k or ↑/↓]select  [Space]expand/collapse  [Enter]open",
-            "Actions: [u]undo  [c]configure  [?]help  [q]quit",
+            "Actions: [w]web  [c]configure  [?]help  [q]quit",
         )
     if available_width >= 49:
         return (
             "Navigate: [j/k]select  [Space]expand  [Enter]open",
-            "Actions: [c]configure  [?]help  [q]quit",
+            "Actions: [w]web  [c]configure  [?]help  [q]quit",
         )
-    if available_width >= 28:
+    if available_width >= 36:
         return (
             "[j/k]select  [Enter]open",
-            "[c]config  [?]help  [q]quit",
+            "[w]web  [c]config  [?]help  [q]quit",
         )
-    return ("[c]config  [?]help  [q]quit",)
+    return ("[w]web  [c]config", "[?]help  [q]quit")
 
 
 def detail_footer_lines(
@@ -324,6 +330,7 @@ class Tui:
         self.main_selection_key: tuple[str, str, int | None] | None = None
         self.pending_change_index: int | None = None
         self.pending_open_review = False
+        self.web_viewer = LocalWebDiffViewer()
         # True when the terminal supports the additional soft-muted palette.
         # We deliberately avoid curses.A_DIM for diff content because many
         # terminals render it far darker than a useful "background" emphasis.
@@ -586,8 +593,20 @@ class Tui:
         except WorkbenchError as exc:
             self.status = f"Could not save review session: {exc}"
             return False
+        self.web_viewer.stop()
         self.status = f"Saved review session to {path}."
         return True
+
+    def open_web_diff_viewer(self) -> None:
+        """Start a fresh read-only browser snapshot of all current differences."""
+        try:
+            self.workbench.scan()
+            launch = self.web_viewer.open(self.workbench)
+        except (OSError, WorkbenchError) as exc:
+            self.status = f"Could not open web diff viewer: {exc}"
+            return
+        opened = "Opened" if launch.browser_opened else "Started"
+        self.status = f"{opened} web diff viewer for {launch.file_count} file(s): {launch.url}"
 
     def run(self, stdscr: Any) -> None:
         curses.curs_set(0)
@@ -877,6 +896,8 @@ class Tui:
                     self.pending_change_index = selected_row.change_index or 0
                     self.pending_open_review = True
                     return "open"
+            elif key in (ord("w"), ord("W")):
+                self.open_web_diff_viewer()
             elif key in (ord("s"), ord("S")):
                 self.workbench.scan()
                 self.workbench.refresh_git_status(fetch_remote=True)
@@ -2777,6 +2798,7 @@ class Tui:
             self.status = str(exc)
             return False
 
+        self.web_viewer.stop()
         self.selected = 0
         self.main_selection_key = None
         self.expanded_files.clear()
@@ -3032,6 +3054,13 @@ class Tui:
             "  ALWAYS REVIEWED keeps versions, images, resources, security, additions,",
             "  removals, structural changes, and ambiguous YAML visible.",
             "  Display options control whitespace, safe YAML order handling, and contrast.",
+            "",
+            "Web diff viewer",
+            "  Press w from the main file list for a read-only browser snapshot of all",
+            "  currently changed files. The left tree navigates files; Focused and Raw",
+            "  switch between the workbench-filtered view and the literal full diff.",
+            "  It binds only to 127.0.0.1, uses no external assets, and cannot edit files.",
+            "  Reopen it from the terminal whenever you need a refreshed snapshot.",
             "",
             "File Actions",
             "  Press a from a file diff to open manual complete/reopen, current-run undo,",

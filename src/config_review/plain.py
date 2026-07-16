@@ -50,6 +50,7 @@ from .rendering import (
     review_unified_diff,
     selected_change_preview,
 )
+from .web_view import LocalWebDiffViewer
 from .workbench import (
     Workbench,
 )
@@ -946,6 +947,7 @@ def run_plain(workbench: Workbench) -> int:
     if not plain_startup_session_prompt(workbench):
         return 0
     selected = 0
+    web_viewer = LocalWebDiffViewer()
     while True:
         workbench.scan()
         records = workbench.records
@@ -969,6 +971,7 @@ def run_plain(workbench: Workbench) -> int:
         )
         if not records:
             print(color("No remaining DEV/TEST YAML differences or review history.", "green"))
+            web_viewer.stop()
             return 0
         status_rows = [(record, *workbench.file_status(record)) for record in records]
         remaining = sum(counts.active for _, _, counts in status_rows)
@@ -1008,18 +1011,28 @@ def run_plain(workbench: Workbench) -> int:
                 f"[{index:>2}] {color(f'{status_text:<30}', *styles)} "
                 f"{state_text} {record.relative_path}"
             )
-        print("[f]filters  [s]rescan/Git check  [x]project config  [q]uit")
+        print("[w]web view  [f]filters  [s]rescan/Git check  [x]project config  [q]uit")
         try:
             raw_choice = input("Open file number: ").strip()
             choice = raw_choice.lower()
         except (EOFError, KeyboardInterrupt):
             print()
             if plain_exit_session_prompt(workbench):
+                web_viewer.stop()
                 return 0
             continue
         if choice == "q":
             if plain_exit_session_prompt(workbench):
+                web_viewer.stop()
                 return 0
+            continue
+        if choice == "w":
+            try:
+                launch = web_viewer.open(workbench)
+                opened = "Opened" if launch.browser_opened else "Started"
+                print(f"{opened} web diff viewer for {launch.file_count} file(s): {launch.url}")
+            except (OSError, WorkbenchError) as exc:
+                print(f"Could not open web diff viewer: {exc}")
             continue
         if choice == "s":
             workbench.refresh_git_status(fetch_remote=True)
@@ -1102,6 +1115,7 @@ def run_plain(workbench: Workbench) -> int:
             while records:
                 result = plain_detail(workbench, records[selected])
                 if result == "quit" and plain_exit_session_prompt(workbench):
+                    web_viewer.stop()
                     return 0
                 if result == "next_file":
                     workbench.scan()
