@@ -131,6 +131,11 @@ from the immutable launch-time snapshot and refuses arbitrary paths or ranges, s
 cannot become a general file browser. Moving to another file clears all expanded gap state;
 returning to the file starts compact again. Notes and reviewed/hidden status are unaffected.
 
+Each control is anchored to the exact physical boundary where those lines were omitted. It is
+not attached to a logical change marker, so expanding leading, trailing, or between-change
+context cannot place an earlier line number underneath a later one. The same boundary model is
+used for normal rows and rows inside an expanded filtered block.
+
 ### Physical line-order safeguard
 
 A uniquely named YAML list item can move to a very different location while also changing.

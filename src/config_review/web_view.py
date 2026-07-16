@@ -469,16 +469,6 @@ def _change_payload(
     }
 
 
-def _block_sort_key(block: ChangeBlock) -> tuple[int, int, int, int, int]:
-    return (
-        min(block.old_start, block.new_start),
-        block.old_start,
-        block.new_start,
-        block.old_end,
-        block.new_end,
-    )
-
-
 def _gap_key(
     record: FileRecord,
     test_start: int,
@@ -495,98 +485,6 @@ def _gap_key(
         digest.update(b"\0")
         digest.update(line.encode("utf-8", errors="surrogatepass"))
     return digest.hexdigest()[:24]
-
-
-def _block_context_width(block: ChangeBlock | None, configured: int) -> int:
-    if block is None:
-        return 0
-    # Expanded hidden blocks deliberately render one nearby context line.
-    return 1 if block.is_hidden else max(0, configured)
-
-
-def _aligned_gap(
-    record: FileRecord,
-    previous: ChangeBlock | None,
-    following: ChangeBlock | None,
-    configured_context: int,
-) -> tuple[int, int, tuple[str, ...]] | None:
-    test_lines = record.test_text.splitlines()
-    dev_lines = record.dev_text.splitlines()
-    test_start = previous.old_end if previous is not None else 0
-    dev_start = previous.new_end if previous is not None else 0
-    test_end = following.old_start if following is not None else len(test_lines)
-    dev_end = following.new_start if following is not None else len(dev_lines)
-    if test_end < test_start or dev_end < dev_start:
-        return None
-    old_gap = test_lines[test_start:test_end]
-    new_gap = dev_lines[dev_start:dev_end]
-    if len(old_gap) != len(new_gap) or old_gap != new_gap:
-        return None
-
-    left_trim = min(len(old_gap), _block_context_width(previous, configured_context))
-    right_trim = min(
-        max(0, len(old_gap) - left_trim),
-        _block_context_width(following, configured_context),
-    )
-    first = left_trim
-    last = len(old_gap) - right_trim
-    if last <= first:
-        return None
-    return test_start + first, dev_start + first, tuple(old_gap[first:last])
-
-
-def _attach_inline_context_gaps(
-    record: FileRecord,
-    presentation: DiffPresentation,
-    changes: list[dict[str, Any]],
-    hidden_changes: list[dict[str, Any]],
-    context_lookup: ContextLookup,
-    configured_context: int,
-    redactor: _PrivacyRedactor,
-) -> None:
-    payload_by_key = {payload["key"]: payload for payload in [*changes, *hidden_changes]}
-    canonical = sorted(presentation.filter_result.blocks, key=_block_sort_key)
-    if not canonical:
-        return
-
-    boundaries: list[tuple[ChangeBlock | None, ChangeBlock | None]] = [
-        (None, canonical[0]),
-        *[(canonical[index], canonical[index + 1]) for index in range(len(canonical) - 1)],
-        (canonical[-1], None),
-    ]
-    for previous, following in boundaries:
-        gap = _aligned_gap(record, previous, following, configured_context)
-        if gap is None:
-            continue
-        test_start, dev_start, lines = gap
-        gap_id = _gap_key(record, test_start, dev_start, lines)
-        context_lookup.setdefault(
-            gap_id,
-            _ContextGapSnapshot(
-                test_start=test_start,
-                dev_start=dev_start,
-                lines=lines,
-                private_lines=tuple(redactor.redact_lines(lines)),
-            ),
-        )
-        previous_payload = (
-            payload_by_key.get(_change_key(record, previous)) if previous is not None else None
-        )
-        following_payload = (
-            payload_by_key.get(_change_key(record, following)) if following is not None else None
-        )
-        if previous_payload is not None:
-            previous_payload["afterGap"] = {
-                "id": gap_id,
-                "length": len(lines),
-                "edge": "start",
-            }
-        elif following_payload is not None:
-            following_payload["beforeGap"] = {
-                "id": gap_id,
-                "length": len(lines),
-                "edge": "end",
-            }
 
 
 def _presentation_payload(
@@ -638,20 +536,19 @@ def _presentation_payload(
             continue
         hidden_changes.append(payload)
 
-    _attach_inline_context_gaps(
+    lines = _display_lines_payload(presentation.lines, redactor)
+    context_gaps = _timeline_context_gaps(
         record,
-        presentation,
-        changes,
-        hidden_changes,
+        lines,
         context_lookup,
-        workbench.settings.context,
         redactor,
     )
 
     return {
-        "lines": _display_lines_payload(presentation.lines, redactor),
+        "lines": lines,
         "changes": changes,
         "hiddenChanges": hidden_changes,
+        "contextGaps": context_gaps,
         "visibleChanges": presentation.visible_change_count,
         "handled": presentation.handled_count,
         "noiseHidden": presentation.pattern_hidden_count,
@@ -745,11 +642,16 @@ def _timeline_context_gaps(
                 private_lines=tuple(redactor.redact_lines(values)),
             ),
         )
+        leading = consumed_test == 0 and consumed_dev == 0
         gaps.append(
             {
                 "id": gap_id,
                 "length": len(values),
-                "edge": "start",
+                # Leading gaps reveal the lines closest to the first rendered
+                # row. Internal and trailing gaps reveal forward from the last
+                # rendered row, matching the control's visual placement.
+                "edge": "end" if leading else "start",
+                "position": "before" if leading else "after",
                 "insertAt": insert_at,
             }
         )
@@ -797,9 +699,6 @@ def _physical_semantic_presentation_payload(
         redactor,
         physical_order_fallback=True,
     )
-    for change in [*base["changes"], *base["hiddenChanges"]]:
-        change.pop("beforeGap", None)
-        change.pop("afterGap", None)
 
     test_owners, dev_owners, emphasis = _semantic_line_owners(semantic)
     output: list[dict[str, Any]] = []
@@ -2301,11 +2200,6 @@ function appendPanels(host, byEnd, lineCount) {
 
 function gapsByStart(view) {
   const result = new Map();
-  for (const change of view.changes ?? []) {
-    if (!change.beforeGap || change.markerIndex == null) continue;
-    if (!result.has(change.markerIndex)) result.set(change.markerIndex, []);
-    result.get(change.markerIndex).push(change.beforeGap);
-  }
   for (const gap of view.contextGaps ?? []) {
     const insertAt = Number(gap.insertAt ?? 0);
     if (!result.has(insertAt)) result.set(insertAt, []);
@@ -2314,33 +2208,19 @@ function gapsByStart(view) {
   return result;
 }
 
-function gapsByEnd(view) {
-  const result = new Map();
-  for (const change of view.changes ?? []) {
-    if (!change.afterGap || change.panelAfter == null) continue;
-    if (!result.has(change.panelAfter)) result.set(change.panelAfter, []);
-    result.get(change.panelAfter).push(change.afterGap);
-  }
-  return result;
-}
-
 function appendBeforeGaps(host, byStart, lineIndex) {
-  for (const gap of byStart.get(lineIndex) ?? []) host.append(contextGapElement(gap, 'before'));
-}
-
-function appendAfterGaps(host, byEnd, lineCount) {
-  for (const gap of byEnd.get(lineCount) ?? []) host.append(contextGapElement(gap, 'after'));
+  for (const gap of byStart.get(lineIndex) ?? []) {
+    host.append(contextGapElement(gap, gap.position ?? 'before'));
+  }
 }
 
 function appendRawLines(host, view) {
   const panelEnd = panelsByEnd(view);
   const gapStart = gapsByStart(view);
-  const gapEnd = gapsByEnd(view);
   for (let index = 0; index < view.lines.length; index++) {
     appendBeforeGaps(host, gapStart, index);
     host.append(lineElement(view.lines[index]));
     appendPanels(host, panelEnd, index + 1);
-    appendAfterGaps(host, gapEnd, index + 1);
   }
   appendBeforeGaps(host, gapStart, view.lines.length);
 }
@@ -2349,7 +2229,6 @@ function appendFocusedLines(host, view) {
   const lines = view.lines;
   const panelEnd = panelsByEnd(view);
   const gapStart = gapsByStart(view);
-  const gapEnd = gapsByEnd(view);
   const hiddenChanges = view.hiddenChanges ?? [];
   let hiddenChangeIndex = 0;
   let pendingContext = null;
@@ -2364,13 +2243,9 @@ function appendFocusedLines(host, view) {
     if (line.kind !== 'filtered_header') {
       host.append(lineElement(line));
       appendPanels(host, panelEnd, index + 1);
-      appendAfterGaps(host, gapEnd, index + 1);
       continue;
     }
     const hiddenChange = hiddenChanges[hiddenChangeIndex++];
-    if (hiddenChange?.beforeGap) {
-      host.append(contextGapElement(hiddenChange.beforeGap, 'before'));
-    }
     const details = document.createElement('details');
     details.className = 'hidden-block';
     const summary = document.createElement('summary');
@@ -2389,14 +2264,12 @@ function appendFocusedLines(host, view) {
     }
     while (index + 1 < lines.length && lines[index + 1].kind.startsWith('filtered_')) {
       index++;
+      appendBeforeGaps(body, gapStart, index);
       body.append(lineElement(lines[index]));
     }
     if (hiddenChange && !hiddenChange.physicalOrderOnly) body.append(reviewPanel(hiddenChange));
     details.append(body);
     host.append(details);
-    if (hiddenChange?.afterGap) {
-      host.append(contextGapElement(hiddenChange.afterGap, 'after'));
-    }
     appendPanels(host, panelEnd, index + 1);
   }
   appendBeforeGaps(host, gapStart, lines.length);

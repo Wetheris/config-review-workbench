@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from config_review.core import AppSettings, compute_filter_result
 from config_review.web_view import _build_web_diff_snapshot, build_web_diff_snapshot
 from config_review.workbench import Workbench
@@ -61,7 +59,6 @@ env:
 """
 
 
-
 def _settings(root: Path) -> AppSettings:
     return AppSettings(
         source=root / "dev",
@@ -108,32 +105,6 @@ def _assert_strictly_increasing(numbers: list[int], side: str) -> None:
         f"{side} line numbers moved backward or repeated: {backwards[:5]}. "
         f"Rendered sequence: {numbers}"
     )
-
-
-def _fully_expanded_line_numbers(
-    presentation: dict[str, Any],
-    context_lookup: dict[str, Any],
-    side: str,
-) -> list[int]:
-    numbers = _line_numbers(presentation, side)
-    start_name = "test_start" if side == "TEST" else "dev_start"
-    referenced_gap_ids: set[str] = set()
-    for change in [
-        *presentation.get("changes", []),
-        *presentation.get("hiddenChanges", []),
-    ]:
-        for name in ("beforeGap", "afterGap"):
-            gap = change.get(name)
-            if gap:
-                referenced_gap_ids.add(str(gap["id"]))
-    for gap in presentation.get("contextGaps", []):
-        referenced_gap_ids.add(str(gap["id"]))
-
-    for gap_id in referenced_gap_ids:
-        gap = context_lookup[gap_id]
-        start = int(getattr(gap, start_name))
-        numbers.extend(range(start + 1, start + len(gap.lines) + 1))
-    return numbers
 
 
 def _browser_fully_expanded_line_numbers(
@@ -279,13 +250,17 @@ def test_focused_expanded_web_snapshot_never_moves_line_numbers_backward(
         f"DEV line numbers were rendered more than once: {dev_numbers}"
     )
 
-    fully_expanded_test = _fully_expanded_line_numbers(focused_expanded, context_lookup, "TEST")
-    fully_expanded_dev = _fully_expanded_line_numbers(focused_expanded, context_lookup, "DEV")
+    fully_expanded_test = _browser_fully_expanded_line_numbers(
+        focused_expanded, context_lookup, "TEST"
+    )
+    fully_expanded_dev = _browser_fully_expanded_line_numbers(
+        focused_expanded, context_lookup, "DEV"
+    )
     expected_test = list(range(1, len((target / "values.yaml").read_text().splitlines()) + 1))
     expected_dev = list(range(1, len((source / "values.yaml").read_text().splitlines()) + 1))
 
-    assert sorted(fully_expanded_test) == expected_test
-    assert sorted(fully_expanded_dev) == expected_dev
+    assert fully_expanded_test == expected_test
+    assert fully_expanded_dev == expected_dev
     assert len(fully_expanded_test) == len(set(fully_expanded_test))
     assert len(fully_expanded_dev) == len(set(fully_expanded_dev))
 
@@ -335,14 +310,14 @@ def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
     _assert_strictly_increasing(_line_numbers(focused_expanded, "TEST"), "TEST")
     _assert_strictly_increasing(_line_numbers(focused_expanded, "DEV"), "DEV")
 
-    fully_expanded_test = _fully_expanded_line_numbers(focused_expanded, context_lookup, "TEST")
-    fully_expanded_dev = _fully_expanded_line_numbers(focused_expanded, context_lookup, "DEV")
-    assert sorted(fully_expanded_test) == list(
-        range(1, len(ADJACENT_MOVED_TEST_YAML.splitlines()) + 1)
+    fully_expanded_test = _browser_fully_expanded_line_numbers(
+        focused_expanded, context_lookup, "TEST"
     )
-    assert sorted(fully_expanded_dev) == list(
-        range(1, len(ADJACENT_MOVED_DEV_YAML.splitlines()) + 1)
+    fully_expanded_dev = _browser_fully_expanded_line_numbers(
+        focused_expanded, context_lookup, "DEV"
     )
+    assert fully_expanded_test == list(range(1, len(ADJACENT_MOVED_TEST_YAML.splitlines()) + 1))
+    assert fully_expanded_dev == list(range(1, len(ADJACENT_MOVED_DEV_YAML.splitlines()) + 1))
 
     # The active-review model should still expose only the real value change.
     assert focused_expanded["visibleChanges"] == 1
@@ -388,14 +363,6 @@ def test_web_view_preserves_one_logical_change_for_adjacent_moved_named_items(
     assert any(line["kind"] == "selector_continuation" for line in focused_expanded["lines"])
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known web context placement bug: a leading omitted gap is inserted at "
-        "the change marker after already-rendered leading context, so fully "
-        "expanded line numbers can move backward."
-    ),
-)
 def test_browser_full_context_expansion_preserves_physical_line_order(
     tmp_path: Path,
 ) -> None:
@@ -405,31 +372,17 @@ def test_browser_full_context_expansion_preserves_physical_line_order(
     target = root / "test"
     source.mkdir(parents=True)
     target.mkdir()
-    (target / "values.yaml").write_text(
-        MISPLACED_LEADING_CONTEXT_TEST_YAML, encoding="utf-8"
-    )
-    (source / "values.yaml").write_text(
-        MISPLACED_LEADING_CONTEXT_DEV_YAML, encoding="utf-8"
-    )
+    (target / "values.yaml").write_text(MISPLACED_LEADING_CONTEXT_TEST_YAML, encoding="utf-8")
+    (source / "values.yaml").write_text(MISPLACED_LEADING_CONTEXT_DEV_YAML, encoding="utf-8")
 
-    snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(
-        Workbench(_settings(root))
-    )
+    snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(Workbench(_settings(root)))
     focused = snapshot["files"][0]["focused"]
 
-    test_numbers = _browser_fully_expanded_line_numbers(
-        focused, context_lookup, "TEST"
-    )
-    dev_numbers = _browser_fully_expanded_line_numbers(
-        focused, context_lookup, "DEV"
-    )
+    test_numbers = _browser_fully_expanded_line_numbers(focused, context_lookup, "TEST")
+    dev_numbers = _browser_fully_expanded_line_numbers(focused, context_lookup, "DEV")
 
-    expected_test = list(
-        range(1, len(MISPLACED_LEADING_CONTEXT_TEST_YAML.splitlines()) + 1)
-    )
-    expected_dev = list(
-        range(1, len(MISPLACED_LEADING_CONTEXT_DEV_YAML.splitlines()) + 1)
-    )
+    expected_test = list(range(1, len(MISPLACED_LEADING_CONTEXT_TEST_YAML.splitlines()) + 1))
+    expected_dev = list(range(1, len(MISPLACED_LEADING_CONTEXT_DEV_YAML.splitlines()) + 1))
 
     assert test_numbers == expected_test
     assert dev_numbers == expected_dev

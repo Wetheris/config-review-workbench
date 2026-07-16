@@ -469,7 +469,7 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
     snapshot = build_web_diff_snapshot(workbench)
     change = snapshot["files"][0]["focused"]["changes"][0]
     context_id = change["gitContextId"]
-    gap = change["beforeGap"]
+    gap = snapshot["files"][0]["focused"]["contextGaps"][0]
 
     viewer = LocalWebDiffViewer()
     try:

@@ -172,6 +172,81 @@ deployment:
                 test_web_keyed_list_physical_timeline,
             )
 
+            def test_web_context_gaps_follow_physical_line_order() -> None:
+                web_root = root / "web-context-order"
+                web_source = web_root / "dev"
+                web_target = web_root / "test"
+                web_source.mkdir(parents=True)
+                web_target.mkdir()
+                web_target.joinpath("values.yaml").write_text(
+                    """env:
+  - name: A
+    value: "a"
+  - name: B
+    value: "old"
+  - name: C
+    value: "c"
+  - name: D
+    value: "d"
+""",
+                    encoding="utf-8",
+                )
+                web_source.joinpath("values.yaml").write_text(
+                    """env:
+  - name: A
+    value: "a"
+  - name: B
+    value: "new"
+  - name: D
+    value: "d"
+  - name: C
+    value: "c"
+""",
+                    encoding="utf-8",
+                )
+                web_settings = AppSettings(
+                    source=web_source,
+                    target=web_target,
+                    config_file=web_root / ".config-review.yaml",
+                    context=3,
+                    include_secrets=False,
+                    edit_command="vim",
+                    vimdiff_command="vimdiff",
+                    dry_run=False,
+                )
+                snapshot, _git_lookup, context_lookup = _build_web_diff_snapshot(
+                    Workbench(web_settings)
+                )
+                view = snapshot["files"][0]["focused"]
+                gaps_by_index = {int(gap["insertAt"]): gap for gap in view.get("contextGaps", [])}
+
+                def expanded(side: str) -> list[int]:
+                    key = "testLine" if side == "TEST" else "devLine"
+                    start_name = "test_start" if side == "TEST" else "dev_start"
+                    numbers: list[int] = []
+                    for index, line in enumerate(view["lines"]):
+                        gap = gaps_by_index.get(index)
+                        if gap is not None:
+                            stored = context_lookup[str(gap["id"])]
+                            start = int(getattr(stored, start_name))
+                            numbers.extend(range(start + 1, start + len(stored.lines) + 1))
+                        if line.get(key) is not None:
+                            numbers.append(int(line[key]))
+                    trailing = gaps_by_index.get(len(view["lines"]))
+                    if trailing is not None:
+                        stored = context_lookup[str(trailing["id"])]
+                        start = int(getattr(stored, start_name))
+                        numbers.extend(range(start + 1, start + len(stored.lines) + 1))
+                    return numbers
+
+                assert expanded("TEST") == list(range(1, 10))
+                assert expanded("DEV") == list(range(1, 10))
+
+            check(
+                "web context expansion stays at physical line boundaries",
+                test_web_context_gaps_follow_physical_line_order,
+            )
+
             def test_selected_diff_guide_range() -> None:
                 source_lines = [DisplayLine("▶ ACTIVE CHANGE 1/1", "selector_selected")]
                 source_lines.extend(
