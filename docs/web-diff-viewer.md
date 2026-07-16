@@ -1,8 +1,9 @@
-# Read-Only Web Diff Viewer
+# Local Web Diff Viewer
 
-The web viewer is a browser-based overview for release reviewers who want to scan every
-currently changed file without navigating the terminal interface one file at a time.
-It is intentionally a viewer, not a second editing interface.
+The web viewer is a browser-based companion for release reviewers who want to scan every
+currently changed file without navigating the terminal interface one file at a time. It
+remains review-only for DEV and TEST: it cannot merge, edit, mark complete, or modify the
+comparison configuration.
 
 ## Opening it
 
@@ -29,10 +30,10 @@ The viewer provides:
 - **Focused**, which mirrors the workbench's current noise and display filters
 - **Raw**, which shows the complete literal text comparison
 - TEST and DEV line-number gutters
-- Visible vertical and horizontal scrollbars for the file tree and diff pane
-- A compact **View** menu with System, Dark, and Light themes
-- Click-to-expand hidden sections in Focused mode, plus Expand all and Collapse all actions
-- The current file status, visible-change count, and hidden/handled summary
+- Expandable hidden sections in Focused mode
+- System, dark, and light themes under **View**
+- A review panel beneath each visible change with a context label, Git context, and note box
+- A **Save review…** action that exports the current view as plaintext
 
 Keyboard shortcuts inside the browser:
 
@@ -41,32 +42,69 @@ Keyboard shortcuts inside the browser:
 | `[` / `]` | Previous or next changed file |
 | `f` | Focused view |
 | `r` | Raw view |
-| `e` | Expand or collapse every hidden Focused section |
 | `/` | Focus the filename search |
+| `e` | Expand or collapse all hidden Focused sections |
 
-### Focused hidden sections
+## Per-change Git context
 
-Focused mode keeps filtered differences collapsed initially. Each purple hidden-difference
-row is interactive: click it to reveal the exact TEST and DEV lines without switching to
-Raw mode. Use **View → Expand all** or **View → Collapse all** to control every hidden
-section in the current file at once. Raw mode remains the literal authoritative comparison.
+Each visible change has a collapsed **Git context** section. It is loaded only when the
+reviewer expands it, so opening the viewer does not run Git blame across every changed
+line.
 
-### Theme and scrolling
+The incoming DEV side is shown first because it normally provides the most useful reason
+for a release change. The viewer:
 
-The **View** menu provides System, Dark, and Light themes for the current browser page.
-System follows the browser or operating-system preference. The choice is intentionally
-session-only because the viewer starts on a random local port for each snapshot.
+1. tries `git blame` for the exact changed lines;
+2. displays the associated commit subject, author, date, and abbreviated hash; and
+3. falls back to the latest commit touching the file when line attribution is unavailable
+   or the line is new.
 
-The file tree and diff pane use native browser scrolling with a stable scrollbar gutter and
-light styling for visibility. Browser and operating-system accessibility settings can still
-choose overlay scrollbars, but the page keeps enough space so appearing scrollbars do not
-shift the diff layout.
+The TEST context is shown beneath DEV for comparison. Git context is local metadata from
+the checked-out repository. It does not fetch, pull, or contact a remote when a section is
+expanded.
+
+## Inline deployment notes
+
+A reviewer can type a deployment note beneath any visible change. Notes are useful for
+questions, follow-up checks, release decisions, or environment-specific reminders.
+
+Notes:
+
+- remain available while moving between files and Focused/Raw views in the current page;
+- are not written into DEV, TEST, `.config-review.yaml`, or Git;
+- are not silently persisted to browser storage; and
+- are included when **Save review…** exports the current view.
+
+The browser warns before closing a page that contains notes that have not been exported.
+Reopening the web viewer creates a new snapshot and does not restore notes from the old
+page.
+
+## Plaintext export
+
+**Save review…** exports every active change from the currently selected mode:
+
+- Focused exports the same selectable changes shown by the filtered quick-review view.
+- Raw exports the literal selectable text changes.
+
+The plaintext file contains:
+
+- snapshot time, TEST and DEV roots, and known Git status;
+- each changed file and its status;
+- deterministic context labels and TEST-to-DEV line ranges;
+- removed and added lines;
+- incoming DEV and current TEST commit context; and
+- the reviewer's inline note for each change.
+
+Microsoft Edge and other Chromium-based browsers use the browser's native file-save dialog
+when the File System Access API is available. Browsers without that API fall back to a
+normal `.txt` download. Cancelling the dialog leaves the notes in the page. The tool does
+not choose or write an export path without the reviewer explicitly using **Save review…**.
 
 ## Snapshot behavior
 
 The browser page is an in-memory snapshot. It does not continuously watch the repository,
-rerun Git, or reread source files. This avoids surprising background work and keeps the
-terminal workbench authoritative.
+rerun the comparison, or reread source files. This avoids surprising background work and
+keeps the terminal workbench authoritative.
 
 Reopen the viewer from the terminal after:
 
@@ -81,16 +119,20 @@ at that time.
 
 ## Security model
 
-The first version is deliberately conservative:
+The viewer remains conservative:
 
 - The HTTP server binds only to `127.0.0.1`, never all network interfaces.
 - The URL contains a random token and the server returns `404` for every other path.
-- The page is read-only. There are no endpoints for edits, merges, commands, or file writes.
+- There are no endpoints for edits, merges, commands, notes, exports, or arbitrary file
+  writes.
+- The only additional endpoint returns Git commit metadata for a known snapshot change.
+- Plaintext export is performed by the browser only after an explicit save action.
 - The server exposes rendered diff data only; it cannot browse arbitrary filesystem paths.
-- All HTML, CSS, and JavaScript is embedded. It loads no external assets and sends no telemetry.
+- All HTML, CSS, and JavaScript is embedded. It loads no external assets and sends no
+  telemetry.
 - Browser caching is disabled and restrictive response headers are applied.
-- Configuration text is inserted as JSON and rendered with `textContent`, preventing it from
-  being interpreted as HTML.
+- Configuration text, commit messages, and notes are rendered with text-only DOM APIs rather
+  than interpreted as HTML.
 
 A local process owned by the same user can still connect to loopback and inspect the page.
 The random token reduces accidental discovery but is not a substitute for operating-system
@@ -108,14 +150,15 @@ The tool intentionally does not bind to a public interface to make remote access
 
 ## Deliberate exclusions
 
-The initial viewer does not include:
+The viewer still does not include:
 
 - editing or merge actions;
 - mark-complete or undo controls;
-- reports or Git blame details;
 - filter configuration;
-- live filesystem watching; or
-- shared/multi-user hosting.
+- live filesystem watching;
+- persistent/shared comments; or
+- shared multi-user hosting.
 
-Keeping these actions in the terminal prevents two separate review workflows from drifting
-apart and makes the browser safe to use as an at-a-glance companion.
+Keeping deployment-changing actions in the terminal prevents two separate workflows from
+drifting apart. Browser notes and exports are personal review aids, not shared workflow
+state.

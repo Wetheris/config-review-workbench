@@ -217,29 +217,45 @@ files and rebuilds the presentation only after a file/view/filter/action change 
 explicit rescan, so arrow-key and terminal mouse-wheel scrolling stay responsive on
 larger files.
 
-### Read-only web diff viewer
+### Local web diff viewer
 
 Press `w` from the main file list to open a browser overview of all currently changed
 files. The left side is a searchable directory tree; selecting a file opens its diff.
 Use **Focused** for the same filtered quick-review presentation used by the terminal, or
-**Raw** for the complete literal TEST-to-DEV diff. Hidden Focused sections can be expanded
-individually, while the compact **View** menu provides expand/collapse-all actions and
-System, Dark, or Light themes. The file tree and diff pane have visible native scrollbars.
-Previous/next buttons and `[` / `]` move between changed files.
+**Raw** for the complete literal TEST-to-DEV diff. Previous/next buttons and `[` / `]`
+move between changed files. Hidden Focused sections can be expanded individually, and the
+View menu provides system, dark, and light themes.
 
-The viewer is deliberately narrow in scope:
+Each visible change now includes a review panel:
 
-- It is read-only and contains no merge, edit, completion, report, or configuration actions.
+- A deterministic context label describes the type of configuration change.
+- **Git context** is loaded on demand and shows the latest relevant incoming DEV commit
+  message first, with current TEST history underneath. Exact-line blame is preferred and
+  the latest file commit is used as a fallback.
+- A deployment-note field lets the reviewer record questions, release checks, or follow-up
+  work while moving through the changed files.
+
+Use **Save review…** to export all changes in the current Focused or Raw mode, their Git
+context, and inline notes to a plaintext `.txt` file. Edge and other Chromium browsers use
+a native save dialog when available; other browsers fall back to a normal download. Notes
+stay only in the current browser page until exported and are never written into DEV, TEST,
+Git, or the workbench configuration.
+
+The viewer is still review-only for project content:
+
+- It contains no merge, edit, completion, undo, or filter-configuration actions.
 - It serves an in-memory snapshot and does not reread files in the background. Reopen it
   from the terminal to refresh after files or filters change.
 - It binds only to `127.0.0.1` on a random port and uses a random URL token.
-- HTML, CSS, and JavaScript are bundled locally; no CDN, telemetry, or external request is used.
-- Only diff presentation data is exposed. The server does not provide arbitrary file access.
+- HTML, CSS, and JavaScript are bundled locally; no CDN, telemetry, or external request is
+  used.
+- The server exposes only diff presentation data and read-only Git metadata for known
+  changes. It does not provide arbitrary file access or a file-write endpoint.
 
 When a browser cannot be opened automatically, the terminal status line prints the local
 URL. Remote SSH sessions may require local port forwarding before that URL is reachable
-from your workstation. See [Read-Only Web Diff Viewer](docs/web-diff-viewer.md) for the
-exact scope and security model.
+from your workstation. See [Local Web Diff Viewer](docs/web-diff-viewer.md) for the exact
+review, export, and security behavior.
 
 ### File Actions and visible-diff reports
 
