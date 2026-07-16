@@ -9,9 +9,11 @@ from urllib.parse import urlparse
 
 import pytest
 
+import config_review.web_view as web_view
 from config_review.core import AppSettings
 from config_review.web_view import (
     LocalWebDiffViewer,
+    _open_browser_once,
     _render_page,
     build_web_diff_snapshot,
 )
@@ -74,6 +76,28 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
     assert change["gitContextId"] == change["key"]
     assert change["panelAfter"] > change["markerIndex"]
     assert file_data["raw"]["changes"][0]["key"] == change["key"]
+
+
+def test_focused_snapshot_exposes_note_targets_for_hidden_differences(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    for name in ("one.yaml", "two.yaml"):
+        (source / name).write_text("environment: dev\n", encoding="utf-8")
+        (target / name).write_text("environment: test\n", encoding="utf-8")
+
+    snapshot = build_web_diff_snapshot(Workbench(_settings(root)))
+
+    for file_data in snapshot["files"]:
+        assert file_data["focused"]["visibleChanges"] == 0
+        assert len(file_data["focused"]["hiddenChanges"]) == 1
+        hidden = file_data["focused"]["hiddenChanges"][0]
+        assert hidden["hidden"] is True
+        assert hidden["oldLines"] == ["environment: test"]
+        assert hidden["newLines"] == ["environment: dev"]
+        assert hidden["key"] == file_data["focusedExpanded"]["hiddenChanges"][0]["key"]
 
 
 def test_snapshot_does_not_collect_git_context_eagerly(
@@ -185,9 +209,68 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Save review…" in page
     assert "showSaveFilePicker" in page
     assert "Deployment note" in page
+    assert "hiddenChanges" in page
+    assert "included because it has a note" in page
     assert "Git context · show latest incoming commit message" in page
     assert "fetch(`git/${encodeURIComponent(change.gitContextId)}`" in page
     assert "createWritable" in page
+
+
+def test_wsl_browser_launcher_uses_one_windows_command(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    url = "http://127.0.0.1:43127/token/"
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    monkeypatch.setenv("WSL_INTEROP", "/run/WSL/1_interop")
+    monkeypatch.setattr(
+        web_view.shutil,
+        "which",
+        lambda name: "/mnt/c/Windows/System32/cmd.exe" if name == "cmd.exe" else None,
+    )
+
+    def fake_popen(command: list[str], **kwargs: object) -> object:
+        calls.append((command, kwargs))
+        return object()
+
+    monkeypatch.setattr(web_view.subprocess, "Popen", fake_popen)
+
+    def unexpected_webbrowser(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("generic webbrowser launcher should not run under WSL")
+
+    monkeypatch.setattr(web_view.webbrowser, "open", unexpected_webbrowser)
+
+    assert _open_browser_once(url) is True
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command == [
+        "/mnt/c/Windows/System32/cmd.exe",
+        "/d",
+        "/c",
+        "start",
+        "",
+        url,
+    ]
+    assert kwargs["stderr"] is web_view.subprocess.DEVNULL
+    assert kwargs["stdout"] is web_view.subprocess.DEVNULL
+
+
+def test_non_wsl_browser_launcher_uses_python_webbrowser_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, int]] = []
+    monkeypatch.delenv("WSL_INTEROP", raising=False)
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    monkeypatch.setattr(web_view.platform, "release", lambda: "6.8.0-linux")
+    monkeypatch.setattr(
+        web_view.webbrowser,
+        "open",
+        lambda url, new=0: calls.append((url, new)) or True,
+    )
+
+    url = "http://127.0.0.1:43127/token/"
+    assert _open_browser_once(url) is True
+    assert calls == [(url, 2)]
 
 
 def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):

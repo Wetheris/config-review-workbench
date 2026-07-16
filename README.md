@@ -226,7 +226,7 @@ Use **Focused** for the same filtered quick-review presentation used by the term
 move between changed files. Hidden Focused sections can be expanded individually, and the
 View menu provides system, dark, and light themes.
 
-Each visible change now includes a review panel:
+Every active change includes a review panel. Hidden Focused changes receive the same panel when expanded:
 
 - A deterministic context label describes the type of configuration change.
 - **Git context** is loaded on demand and shows the latest relevant incoming DEV commit
@@ -235,11 +235,12 @@ Each visible change now includes a review panel:
 - A deployment-note field lets the reviewer record questions, release checks, or follow-up
   work while moving through the changed files.
 
-Use **Save review…** to export all changes in the current Focused or Raw mode, their Git
-context, and inline notes to a plaintext `.txt` file. Edge and other Chromium browsers use
-a native save dialog when available; other browsers fall back to a normal download. Notes
-stay only in the current browser page until exported and are never written into DEV, TEST,
-Git, or the workbench configuration.
+Use **Save review…** to export changes in the current Focused or Raw mode, their Git
+context, and inline notes to a plaintext `.txt` file. Focused export includes active changes
+plus any hidden change that the reviewer deliberately annotated; Raw export includes every
+literal change. Edge and other Chromium browsers use a native save dialog when available;
+other browsers fall back to a normal download. Notes stay only in the current browser page
+until exported and are never written into DEV, TEST, Git, or the workbench configuration.
 
 The viewer is still review-only for project content:
 
@@ -252,8 +253,10 @@ The viewer is still review-only for project content:
 - The server exposes only diff presentation data and read-only Git metadata for known
   changes. It does not provide arbitrary file access or a file-write endpoint.
 
-When a browser cannot be opened automatically, the terminal status line prints the local
-URL. Remote SSH sessions may require local port forwarding before that URL is reachable
+Under WSL, the launcher uses one Windows browser handoff instead of trying multiple Linux
+openers, avoiding duplicate tabs and noisy `gio` errors. When a browser cannot be opened
+automatically, the terminal status line prints the local URL. Remote SSH sessions may
+require local port forwarding before that URL is reachable
 from your workstation. See [Local Web Diff Viewer](docs/web-diff-viewer.md) for the exact
 review, export, and security behavior.
 

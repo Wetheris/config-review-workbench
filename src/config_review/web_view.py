@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import platform
 import secrets
+import shutil
+import subprocess
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -43,6 +47,45 @@ class WebViewerLaunch:
 
 
 GitLookup = dict[str, tuple[FileRecord, ChangeBlock]]
+
+
+def _running_under_wsl() -> bool:
+    """Return True when the process is running inside Windows Subsystem for Linux."""
+    if os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+        return True
+    return "microsoft" in platform.release().lower()
+
+
+def _open_browser_once(url: str) -> bool:
+    """Open one browser window without noisy duplicate WSL launcher attempts."""
+    if _running_under_wsl():
+        command: list[str] | None = None
+        windows_cmd = shutil.which("cmd.exe")
+        if windows_cmd:
+            command = [windows_cmd, "/d", "/c", "start", "", url]
+        else:
+            wslview = shutil.which("wslview")
+            if wslview:
+                command = [wslview, url]
+
+        if command is None:
+            return False
+        try:
+            subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            return False
+        return True
+
+    try:
+        return bool(webbrowser.open(url, new=2))
+    except (OSError, webbrowser.Error):
+        return False
 
 
 def _display_line_payload(line: DisplayLine) -> dict[str, Any]:
@@ -82,6 +125,34 @@ def _line_range_text(start: int, end: int) -> str:
     return str(first) if first == last else f"{first}-{last}"
 
 
+def _change_payload(
+    workbench: Workbench,
+    record: FileRecord,
+    block: ChangeBlock,
+    git_lookup: GitLookup,
+    *,
+    marker_index: int | None = None,
+    panel_after: int | None = None,
+    hidden: bool = False,
+) -> dict[str, Any]:
+    key = _change_key(record, block)
+    git_lookup.setdefault(key, (record, block))
+    return {
+        "key": key,
+        "gitContextId": key,
+        "label": workbench._change_context_label(record, block),
+        "markerIndex": marker_index,
+        "panelAfter": panel_after,
+        "testRange": _line_range_text(block.old_start, block.old_end),
+        "devRange": _line_range_text(block.new_start, block.new_end),
+        "testStart": block.old_start,
+        "devStart": block.new_start,
+        "oldLines": list(block.old_lines),
+        "newLines": list(block.new_lines),
+        "hidden": hidden,
+    }
+
+
 def _presentation_payload(
     workbench: Workbench,
     record: FileRecord,
@@ -89,34 +160,46 @@ def _presentation_payload(
     git_lookup: GitLookup,
 ) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
+    active_keys: set[str] = set()
     for index, block in enumerate(presentation.change_blocks):
-        key = _change_key(record, block)
-        git_lookup.setdefault(key, (record, block))
         marker_index = (
             presentation.change_line_indexes[index]
             if index < len(presentation.change_line_indexes)
             else 0
         )
-        changes.append(
-            {
-                "key": key,
-                "gitContextId": key,
-                "label": workbench._change_context_label(record, block),
-                "markerIndex": marker_index,
-                "panelAfter": min(
-                    len(presentation.lines),
-                    marker_index + 1 + block.old_count + block.new_count,
-                ),
-                "testRange": _line_range_text(block.old_start, block.old_end),
-                "devRange": _line_range_text(block.new_start, block.new_end),
-                "oldLines": list(block.old_lines),
-                "newLines": list(block.new_lines),
-            }
+        payload = _change_payload(
+            workbench,
+            record,
+            block,
+            git_lookup,
+            marker_index=marker_index,
+            panel_after=min(
+                len(presentation.lines),
+                marker_index + 1 + block.old_count + block.new_count,
+            ),
         )
+        active_keys.add(payload["key"])
+        changes.append(payload)
+
+    hidden_changes: list[dict[str, Any]] = []
+    for block in presentation.filter_result.blocks:
+        if not block.is_hidden:
+            continue
+        payload = _change_payload(
+            workbench,
+            record,
+            block,
+            git_lookup,
+            hidden=True,
+        )
+        if payload["key"] in active_keys:
+            continue
+        hidden_changes.append(payload)
 
     return {
         "lines": [_display_line_payload(line) for line in presentation.lines],
         "changes": changes,
+        "hiddenChanges": hidden_changes,
         "visibleChanges": presentation.visible_change_count,
         "handled": presentation.handled_count,
         "noiseHidden": presentation.pattern_hidden_count,
@@ -653,9 +736,13 @@ function treeFrom(files) {
   return root;
 }
 
+function allReviewChanges(view) {
+  return [...(view?.changes ?? []), ...(view?.hiddenChanges ?? [])];
+}
+
 function fileHasNotes(file) {
   for (const viewName of ['focused', 'raw']) {
-    for (const change of file[viewName]?.changes ?? []) {
+    for (const change of allReviewChanges(file[viewName])) {
       if ((notesByChange.get(change.key) ?? '').trim()) return true;
     }
   }
@@ -853,6 +940,8 @@ function appendRawLines(host, view) {
 function appendFocusedLines(host, view) {
   const lines = view.lines;
   const byEnd = panelsByEnd(view);
+  const hiddenChanges = view.hiddenChanges ?? [];
+  let hiddenChangeIndex = 0;
   let pendingContext = null;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
@@ -882,6 +971,8 @@ function appendFocusedLines(host, view) {
       index++;
       body.append(lineElement(lines[index]));
     }
+    const hiddenChange = hiddenChanges[hiddenChangeIndex++];
+    if (hiddenChange) body.append(reviewPanel(hiddenChange));
     details.append(body);
     host.append(details);
     appendPanels(host, byEnd, index + 1);
@@ -948,7 +1039,7 @@ function setAllGit(open) {
       const key = details.closest('.review-panel')?.dataset.changeKey;
       const file = snapshot.files[selected];
       const view = mode === 'focused' ? (file.focusedExpanded ?? file.focused) : file.raw;
-      const change = (view.changes ?? []).find(item => item.key === key);
+      const change = allReviewChanges(view).find(item => item.key === key);
       if (change) loadGitContext(details, change);
     }
   });
@@ -990,6 +1081,19 @@ function formatCommitLines(side, contexts) {
   return lines;
 }
 
+function changesForExport(file) {
+  if (mode === 'raw') return file.raw.changes ?? [];
+  const active = file.focused.changes ?? [];
+  const notedHidden = (file.focused.hiddenChanges ?? []).filter(change => {
+    return (notesByChange.get(change.key) ?? '').trim();
+  });
+  return [...active, ...notedHidden].sort((left, right) => {
+    const leftPosition = Math.min(left.testStart ?? Number.MAX_SAFE_INTEGER, left.devStart ?? Number.MAX_SAFE_INTEGER);
+    const rightPosition = Math.min(right.testStart ?? Number.MAX_SAFE_INTEGER, right.devStart ?? Number.MAX_SAFE_INTEGER);
+    return leftPosition - rightPosition;
+  });
+}
+
 async function buildPlaintextReview() {
   const lines = [
     'CONFIG REVIEW WORKBENCH',
@@ -1005,7 +1109,7 @@ async function buildPlaintextReview() {
   let exportedChanges = 0;
   for (const file of snapshot.files) {
     const view = mode === 'focused' ? file.focused : file.raw;
-    const changes = view.changes ?? [];
+    const changes = changesForExport(file);
     if (!changes.length) continue;
     lines.push('#'.repeat(80));
     lines.push(`FILE: ${file.path}`);
@@ -1018,7 +1122,7 @@ async function buildPlaintextReview() {
     for (let index = 0; index < changes.length; index++) {
       const change = changes[index];
       exportedChanges++;
-      lines.push(`${index + 1}. ${change.label}`);
+      lines.push(`${index + 1}. ${change.label}${change.hidden ? ' [hidden in Focused view; included because it has a note]' : ''}`);
       lines.push('-'.repeat(80));
       lines.push(`TEST ${change.testRange} -> DEV ${change.devRange}`);
       lines.push('');
@@ -1067,8 +1171,7 @@ async function writeReview(destination, text, filename) {
 
 async function saveReview() {
   const visibleChangeCount = snapshot.files.reduce((total, file) => {
-    const view = mode === 'focused' ? file.focused : file.raw;
-    return total + (view.changes ?? []).length;
+    return total + changesForExport(file).length;
   }, 0);
   if (!visibleChangeCount) {
     setStatus('No visible changes in the current view; no review file was created.', 'error');
@@ -1290,7 +1393,7 @@ class LocalWebDiffViewer:
         self._server = server
         self._thread = thread
         self.url = url
-        browser_opened = webbrowser.open(url, new=2) if open_browser else False
+        browser_opened = _open_browser_once(url) if open_browser else False
         return WebViewerLaunch(
             url=url,
             file_count=len(snapshot["files"]),

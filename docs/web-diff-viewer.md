@@ -32,7 +32,7 @@ The viewer provides:
 - TEST and DEV line-number gutters
 - Expandable hidden sections in Focused mode
 - System, dark, and light themes under **View**
-- A review panel beneath each visible change with a context label, Git context, and note box
+- A review panel beneath every active change, plus every hidden Focused change when expanded
 - A **Save review…** action that exports the current view as plaintext
 
 Keyboard shortcuts inside the browser:
@@ -47,7 +47,7 @@ Keyboard shortcuts inside the browser:
 
 ## Per-change Git context
 
-Each visible change has a collapsed **Git context** section. It is loaded only when the
+Each reviewable change has a collapsed **Git context** section. It is loaded only when the
 reviewer expands it, so opening the viewer does not run Git blame across every changed
 line.
 
@@ -65,7 +65,7 @@ expanded.
 
 ## Inline deployment notes
 
-A reviewer can type a deployment note beneath any visible change. Notes are useful for
+A reviewer can type a deployment note beneath any active change. Expanding a hidden Focused difference also reveals a note field for that exact hidden change. Notes are useful for
 questions, follow-up checks, release decisions, or environment-specific reminders.
 
 Notes:
@@ -81,10 +81,12 @@ page.
 
 ## Plaintext export
 
-**Save review…** exports every active change from the currently selected mode:
+**Save review…** exports the currently selected mode:
 
-- Focused exports the same selectable changes shown by the filtered quick-review view.
-- Raw exports the literal selectable text changes.
+- Focused exports every active quick-review change. A hidden Focused change is included only
+  when the reviewer deliberately added a note to it, so filtered noise does not flood the
+  output by default.
+- Raw exports every literal text change.
 
 The plaintext file contains:
 
@@ -140,8 +142,10 @@ account isolation.
 
 ## WSL and SSH
 
-On a local WSL installation, the default Windows browser will often open the loopback URL
-directly. Behavior depends on the installed browser integration.
+On a local WSL installation, the workbench uses one explicit Windows browser handoff
+through `cmd.exe` when available, with `wslview` as a fallback. It does not call the generic
+Python browser chain under WSL, which avoids duplicate tabs and noisy failed `gio` attempts.
+If neither handoff is available, the terminal prints the URL for manual opening.
 
 When the workbench runs on a remote SSH host, `127.0.0.1` refers to that remote host. Use
 SSH local port forwarding when policy permits, for example by forwarding the displayed
