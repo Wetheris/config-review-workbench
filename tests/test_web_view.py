@@ -10,9 +10,11 @@ from urllib.parse import urlparse
 import pytest
 
 import config_review.web_view as web_view
-from config_review.core import AppSettings
+from config_review.core import AppSettings, ChangeBlock
 from config_review.web_view import (
     LocalWebDiffViewer,
+    _ChangeContextSnapshot,
+    _context_payload,
     _open_browser_once,
     _render_page,
     build_web_diff_snapshot,
@@ -74,6 +76,11 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
     assert change["devRange"] == "1"
     assert len(change["key"]) == 24
     assert change["gitContextId"] == change["key"]
+    assert change["contextId"] == change["key"]
+    assert change["testStart"] == 0
+    assert change["testEnd"] == 1
+    assert change["devStart"] == 0
+    assert change["devEnd"] == 1
     assert change["panelAfter"] > change["markerIndex"]
     assert file_data["raw"]["changes"][0]["key"] == change["key"]
 
@@ -98,6 +105,36 @@ def test_focused_snapshot_exposes_note_targets_for_hidden_differences(tmp_path: 
         assert hidden["oldLines"] == ["environment: test"]
         assert hidden["newLines"] == ["environment: dev"]
         assert hidden["key"] == file_data["focusedExpanded"]["hiddenChanges"][0]["key"]
+
+
+def test_context_payload_expands_in_chunks_and_stops_at_file_bounds():
+    lines = tuple(f"line {index}" for index in range(1, 31))
+    snapshot = _ChangeContextSnapshot(
+        test_lines=lines,
+        dev_lines=lines,
+        block=ChangeBlock(
+            tag="replace",
+            old_start=14,
+            old_end=16,
+            new_start=14,
+            new_end=16,
+            old_lines=["line 15", "line 16"],
+            new_lines=["line 15", "line 16"],
+        ),
+    )
+
+    first = _context_payload(snapshot, before=10, after=10)
+    assert first["test"]["lines"][0]["number"] == 5
+    assert first["test"]["lines"][-1]["number"] == 26
+    assert first["test"]["moreAbove"] is True
+    assert first["test"]["moreBelow"] is True
+    assert [line["number"] for line in first["test"]["lines"] if line["changed"]] == [15, 16]
+
+    expanded = _context_payload(snapshot, before=20, after=20)
+    assert expanded["test"]["lines"][0]["number"] == 1
+    assert expanded["test"]["lines"][-1]["number"] == 30
+    assert expanded["test"]["moreAbove"] is False
+    assert expanded["test"]["moreBelow"] is False
 
 
 def test_snapshot_does_not_collect_git_context_eagerly(
@@ -209,6 +246,20 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Save review…" in page
     assert "showSaveFilePicker" in page
     assert "Deployment note" in page
+    assert "File context · show nearby TEST and DEV lines" in page
+    assert "Show 10 more above" in page
+    assert "Show 10 more below" in page
+    assert "Hide file" in page
+    assert "Mark reviewed" in page
+    assert "Review ▾" in page
+    assert "Hidden files" in page
+    assert "Reviewed files" in page
+    assert "Save reviewed report…" in page
+    assert "Print reviewed report…" in page
+    assert "reviewedFiles = new Set()" in page
+    assert "hiddenFiles = new Set()" in page
+    assert "contextStateByChange.clear()" in page
+    assert "window.print()" in page
     assert "hiddenChanges" in page
     assert "included because it has a note" in page
     assert "Git context · show latest incoming commit message" in page
@@ -321,6 +372,17 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
             assert payload["test"][0]["subject"] == "Initial configuration"
             assert payload["dev"][0]["source"] in {"line", "file"}
 
+        file_context_url = launch.url + "context/" + context_id + "?before=10&after=10"
+        with urllib.request.urlopen(file_context_url, timeout=5) as response:
+            payload = json.load(response)
+            assert response.headers["Content-Type"].startswith("application/json")
+            assert payload["test"]["lines"] == [
+                {"number": 1, "text": "value: test", "changed": True}
+            ]
+            assert payload["dev"]["lines"] == [{"number": 1, "text": "value: dev", "changed": True}]
+            assert payload["test"]["moreAbove"] is False
+            assert payload["test"]["moreBelow"] is False
+
         request = urllib.request.Request(launch.url, data=b"x", method="POST")
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(request, timeout=2)
@@ -333,6 +395,10 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
 
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(launch.url + "git/not-a-change", timeout=2)
+        assert exc_info.value.code == 404
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(launch.url + "context/not-a-change", timeout=2)
         assert exc_info.value.code == 404
     finally:
         viewer.stop()

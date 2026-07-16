@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .core import (
     ChangeBlock,
@@ -47,6 +48,18 @@ class WebViewerLaunch:
 
 
 GitLookup = dict[str, tuple[FileRecord, ChangeBlock]]
+
+
+@dataclass(slots=True, frozen=True)
+class _ChangeContextSnapshot:
+    """Immutable file text captured when the browser snapshot is created."""
+
+    test_lines: tuple[str, ...]
+    dev_lines: tuple[str, ...]
+    block: ChangeBlock
+
+
+ContextLookup = dict[str, _ChangeContextSnapshot]
 
 
 def _running_under_wsl() -> bool:
@@ -130,6 +143,7 @@ def _change_payload(
     record: FileRecord,
     block: ChangeBlock,
     git_lookup: GitLookup,
+    context_lookup: ContextLookup,
     *,
     marker_index: int | None = None,
     panel_after: int | None = None,
@@ -137,16 +151,27 @@ def _change_payload(
 ) -> dict[str, Any]:
     key = _change_key(record, block)
     git_lookup.setdefault(key, (record, block))
+    context_lookup.setdefault(
+        key,
+        _ChangeContextSnapshot(
+            test_lines=tuple(record.test_text.splitlines()),
+            dev_lines=tuple(record.dev_text.splitlines()),
+            block=block,
+        ),
+    )
     return {
         "key": key,
         "gitContextId": key,
+        "contextId": key,
         "label": workbench._change_context_label(record, block),
         "markerIndex": marker_index,
         "panelAfter": panel_after,
         "testRange": _line_range_text(block.old_start, block.old_end),
         "devRange": _line_range_text(block.new_start, block.new_end),
         "testStart": block.old_start,
+        "testEnd": block.old_end,
         "devStart": block.new_start,
+        "devEnd": block.new_end,
         "oldLines": list(block.old_lines),
         "newLines": list(block.new_lines),
         "hidden": hidden,
@@ -158,6 +183,7 @@ def _presentation_payload(
     record: FileRecord,
     presentation: DiffPresentation,
     git_lookup: GitLookup,
+    context_lookup: ContextLookup,
 ) -> dict[str, Any]:
     changes: list[dict[str, Any]] = []
     active_keys: set[str] = set()
@@ -172,6 +198,7 @@ def _presentation_payload(
             record,
             block,
             git_lookup,
+            context_lookup,
             marker_index=marker_index,
             panel_after=min(
                 len(presentation.lines),
@@ -190,6 +217,7 @@ def _presentation_payload(
             record,
             block,
             git_lookup,
+            context_lookup,
             hidden=True,
         )
         if payload["key"] in active_keys:
@@ -209,10 +237,13 @@ def _presentation_payload(
     }
 
 
-def _build_web_diff_snapshot(workbench: Workbench) -> tuple[dict[str, Any], GitLookup]:
-    """Build the browser snapshot and its private, read-only Git lookup table."""
+def _build_web_diff_snapshot(
+    workbench: Workbench,
+) -> tuple[dict[str, Any], GitLookup, ContextLookup]:
+    """Build the browser snapshot and private read-only lookup tables."""
     files: list[dict[str, Any]] = []
     git_lookup: GitLookup = {}
+    context_lookup: ContextLookup = {}
     for record in workbench.records:
         workbench.refresh_record(record)
         full = full_unified_diff(record, workbench.settings.context, selected_change=0)
@@ -243,11 +274,13 @@ def _build_web_diff_snapshot(workbench: Workbench) -> tuple[dict[str, Any], GitL
                 "path": record.relative_path,
                 "status": status,
                 "states": list(record.states),
-                "focused": _presentation_payload(workbench, record, focused, git_lookup),
-                "focusedExpanded": _presentation_payload(
-                    workbench, record, focused_expanded, git_lookup
+                "focused": _presentation_payload(
+                    workbench, record, focused, git_lookup, context_lookup
                 ),
-                "raw": _presentation_payload(workbench, record, full, git_lookup),
+                "focusedExpanded": _presentation_payload(
+                    workbench, record, focused_expanded, git_lookup, context_lookup
+                ),
+                "raw": _presentation_payload(workbench, record, full, git_lookup, context_lookup),
                 "counts": {
                     "active": counts.active,
                     "handled": counts.handled,
@@ -268,12 +301,12 @@ def _build_web_diff_snapshot(workbench: Workbench) -> tuple[dict[str, Any], GitL
         "gitStatus": workbench.git_status.summary,
         "files": files,
     }
-    return snapshot, git_lookup
+    return snapshot, git_lookup, context_lookup
 
 
 def build_web_diff_snapshot(workbench: Workbench) -> dict[str, Any]:
-    """Build the public browser snapshot without exposing private Git objects."""
-    snapshot, _git_lookup = _build_web_diff_snapshot(workbench)
+    """Build the public browser snapshot without exposing private server objects."""
+    snapshot, _git_lookup, _context_lookup = _build_web_diff_snapshot(workbench)
     return snapshot
 
 
@@ -301,6 +334,59 @@ def _git_context_payload(
         # DEV is the incoming side of the comparison and is intentionally first.
         "dev": [_commit_payload(item) for item in newest_first(dev_context)],
         "test": [_commit_payload(item) for item in newest_first(test_context)],
+    }
+
+
+def _bounded_query_int(values: list[str] | None, default: int) -> int:
+    if not values:
+        return default
+    try:
+        value = int(values[0])
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(value, 100_000))
+
+
+def _context_side_payload(
+    lines: tuple[str, ...],
+    start: int,
+    end: int,
+    before: int,
+    after: int,
+) -> dict[str, Any]:
+    anchor_end = max(start, end)
+    first = max(0, start - before)
+    last = min(len(lines), anchor_end + after)
+    return {
+        "lines": [
+            {
+                "number": index + 1,
+                "text": lines[index],
+                "changed": start <= index < end,
+            }
+            for index in range(first, last)
+        ],
+        "moreAbove": first > 0,
+        "moreBelow": last < len(lines),
+    }
+
+
+def _context_payload(
+    snapshot: _ChangeContextSnapshot,
+    *,
+    before: int,
+    after: int,
+) -> dict[str, Any]:
+    block = snapshot.block
+    return {
+        "before": before,
+        "after": after,
+        "test": _context_side_payload(
+            snapshot.test_lines, block.old_start, block.old_end, before, after
+        ),
+        "dev": _context_side_payload(
+            snapshot.dev_lines, block.new_start, block.new_end, before, after
+        ),
     }
 
 
@@ -337,6 +423,8 @@ def _render_page(snapshot: dict[str, Any]) -> bytes:
   --scroll-track: #161b22;
   --note: #f2cc60;
   --notebg: #bb800926;
+  --reviewed: #3fb950;
+  --reviewedbg: #23863626;
 }
 :root[data-theme="light"] {
   color-scheme: light;
@@ -360,6 +448,8 @@ def _render_page(snapshot: dict[str, Any]) -> bytes:
   --scroll-track: #f6f8fa;
   --note: #7d4e00;
   --notebg: #fff8c5;
+  --reviewed: #1a7f37;
+  --reviewedbg: #dafbe1;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; min-height: 0; margin: 0; }
@@ -440,6 +530,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 1px 6px;
 }
 .badge.notes { color: var(--note); border-color: var(--note); }
+.badge.reviewed { color: var(--reviewed); border-color: var(--reviewed); }
+.badge.hidden { color: var(--hidden); border-color: var(--hidden); }
 .main { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
 .toolbar {
   min-height: 70px;
@@ -499,6 +591,39 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .view-menu button { padding: 5px 7px; font-size: 12px; }
 .view-menu button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .menu-separator { height: 1px; background: var(--border); margin: 10px 0; }
+.review-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.review-summary div {
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-align: center;
+  font-size: 11px;
+}
+.file-state-list { max-height: 180px; overflow: auto; margin-bottom: 6px; }
+.file-state-empty { color: var(--muted); font-size: 12px; padding: 5px 2px; }
+.file-state-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.file-state-row:last-child { border-bottom: 0; }
+.file-state-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.file-state-actions { display: flex; gap: 4px; }
+.file-state-actions button, .review-action-row button { padding: 4px 6px; font-size: 11px; }
+.review-action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 6px; }
 .meta { width: 100%; color: var(--muted); font-size: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
 .diff {
   flex: 1 1 0;
@@ -599,6 +724,43 @@ button, input, select, textarea { font: inherit; color: inherit; }
   line-height: 1.4;
 }
 .review-note:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.file-context { border-bottom: 1px solid var(--border); }
+.file-context summary { cursor: pointer; padding: 8px 12px; color: var(--accent); user-select: none; }
+.file-context[open] summary { border-bottom: 1px solid var(--border); }
+.context-content { padding: 10px 12px; }
+.context-controls { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.context-controls button {
+  border: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.context-controls button:disabled { cursor: default; opacity: .45; }
+.context-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.context-side { min-width: 0; border: 1px solid var(--border); border-radius: 6px; overflow: auto; }
+.context-side-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 8px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.context-line {
+  display: grid;
+  grid-template-columns: 56px minmax(max-content, 1fr);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.context-line-number { padding: 1px 7px; text-align: right; color: var(--muted); border-right: 1px solid var(--border); user-select: none; }
+.context-line-code { padding: 1px 8px; white-space: pre; }
+.context-line.changed { background: var(--accentbg); }
+.context-loading { color: var(--muted); }
+.print-report { display: none; white-space: pre-wrap; font: 11pt/1.4 ui-monospace, Consolas, monospace; }
 .footer {
   padding: 6px 12px;
   border-top: 1px solid var(--border);
@@ -617,6 +779,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .line { grid-template-columns: 46px 46px 20px minmax(max-content, 1fr); }
   .view-menu-panel { right: -4px; }
   .review-panel { margin-left: 115px; }
+  .context-grid { grid-template-columns: 1fr; }
+}
+@media print {
+  body { overflow: visible; background: #fff; color: #000; }
+  .app { display: none !important; }
+  .print-report { display: block; color: #000; }
 }
 </style>
 </head>
@@ -635,7 +803,25 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <button id="next" title="Next file (])">File →</button>
         <button id="focused" class="active">Focused</button>
         <button id="raw">Raw</button>
+        <button id="hideFile" title="Temporarily remove this file from the active tree">Hide file</button>
+        <button id="reviewFile" title="Mark this file reviewed for the temporary review report">Mark reviewed</button>
         <button id="saveReview" title="Save all current-view changes and reviewer notes as plaintext">Save review…</button>
+        <details id="reviewMenu" class="view-menu">
+          <summary>Review ▾</summary>
+          <div class="view-menu-panel">
+            <div id="reviewSummary" class="review-summary"></div>
+            <div class="menu-label">Hidden files</div>
+            <div id="hiddenFileList" class="file-state-list"></div>
+            <button id="restoreHidden" type="button">Show all hidden</button>
+            <div class="menu-separator"></div>
+            <div class="menu-label">Reviewed files</div>
+            <div id="reviewedFileList" class="file-state-list"></div>
+            <div class="review-action-row">
+              <button id="saveReviewed" type="button">Save reviewed report…</button>
+              <button id="printReviewed" type="button">Print reviewed report…</button>
+            </div>
+          </div>
+        </details>
         <details id="viewMenu" class="view-menu">
           <summary>View ▾</summary>
           <div class="view-menu-panel">
@@ -666,6 +852,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
     <div id="footer" class="footer"></div>
   </main>
 </div>
+<pre id="printReport" class="print-report"></pre>
 <script id="snapshot" type="application/json">__SNAPSHOT__</script>
 <script>
 'use strict';
@@ -675,8 +862,13 @@ let selected = 0;
 let visible = snapshot.files.slice();
 let themeChoice = 'system';
 let notesDirty = false;
+let contextFilePath = null;
 const notesByChange = new Map();
 const gitContextCache = new Map();
+const contextStateByChange = new Map();
+const hiddenFiles = new Set();
+const reviewedFiles = new Set();
+const reviewedAtByFile = new Map();
 const $ = id => document.getElementById(id);
 const systemTheme = window.matchMedia('(prefers-color-scheme: light)');
 const prefixFor = kind => kind.includes('remove') || kind === 'remove_note' ? '-' : kind.includes('add') || kind === 'add_note' ? '+' : kind === 'context' || kind === 'filtered_context' ? ' ' : '';
@@ -700,7 +892,7 @@ function setStatus(message, kind = '') {
 }
 
 function defaultStatus() {
-  return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · notes remain in this browser until saved`;
+  return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · review state is temporary until exported`;
 }
 
 function lineElement(line) {
@@ -749,6 +941,37 @@ function fileHasNotes(file) {
   return false;
 }
 
+function fileIsActive(file) {
+  return !hiddenFiles.has(file.path) && !reviewedFiles.has(file.path);
+}
+
+function currentFile() {
+  return snapshot.files[selected] ?? null;
+}
+
+function selectFile(file) {
+  if (!file) return;
+  const previousPath = currentFile()?.path ?? null;
+  selected = snapshot.files.indexOf(file);
+  if (previousPath !== file.path) {
+    contextStateByChange.clear();
+    contextFilePath = file.path;
+  }
+  render();
+}
+
+function activeFilesMatchingSearch() {
+  const query = $('search').value.trim().toLowerCase();
+  return snapshot.files.filter(file => fileIsActive(file) && file.path.toLowerCase().includes(query));
+}
+
+function nextActiveAfter(file) {
+  const active = snapshot.files.filter(fileIsActive);
+  if (!active.length) return null;
+  const originalIndex = snapshot.files.indexOf(file);
+  return active.find(item => snapshot.files.indexOf(item) > originalIndex) ?? active[0];
+}
+
 function renderNode(node, host) {
   for (const [name, child] of [...node.folders].sort((a, b) => a[0].localeCompare(b[0]))) {
     const details = document.createElement('details');
@@ -766,10 +989,7 @@ function renderNode(node, host) {
     const button = document.createElement('button');
     button.className = 'file' + (snapshot.files[selected] === item.file ? ' active' : '');
     button.title = item.file.path;
-    button.onclick = () => {
-      selected = snapshot.files.indexOf(item.file);
-      render();
-    };
+    button.onclick = () => selectFile(item.file);
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = item.name;
@@ -783,8 +1003,107 @@ function renderNode(node, host) {
       noteBadge.textContent = 'note';
       button.append(noteBadge);
     }
+    if (reviewedFiles.has(item.file.path)) {
+      const reviewedBadge = document.createElement('span');
+      reviewedBadge.className = 'badge reviewed';
+      reviewedBadge.textContent = 'reviewed';
+      button.append(reviewedBadge);
+    }
+    if (hiddenFiles.has(item.file.path)) {
+      const hiddenBadge = document.createElement('span');
+      hiddenBadge.className = 'badge hidden';
+      hiddenBadge.textContent = 'hidden';
+      button.append(hiddenBadge);
+    }
     host.append(button);
   }
+}
+
+function fileStateRow(file, actions) {
+  const row = document.createElement('div');
+  row.className = 'file-state-row';
+  const name = document.createElement('div');
+  name.className = 'file-state-name';
+  name.textContent = file.path;
+  name.title = file.path;
+  const actionHost = document.createElement('div');
+  actionHost.className = 'file-state-actions';
+  for (const action of actions) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label;
+    button.onclick = action.run;
+    actionHost.append(button);
+  }
+  row.append(name, actionHost);
+  return row;
+}
+
+function renderFileStateList(host, files, rowFactory, emptyText) {
+  host.replaceChildren();
+  if (!files.length) {
+    const empty = document.createElement('div');
+    empty.className = 'file-state-empty';
+    empty.textContent = emptyText;
+    host.append(empty);
+    return;
+  }
+  files.forEach(file => host.append(rowFactory(file)));
+}
+
+function renderReviewMenu() {
+  const remaining = snapshot.files.filter(fileIsActive).length;
+  const summary = $('reviewSummary');
+  summary.replaceChildren();
+  for (const [label, value] of [
+    ['Remaining', remaining],
+    ['Reviewed', reviewedFiles.size],
+    ['Hidden', hiddenFiles.size],
+  ]) {
+    const item = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = String(value);
+    item.append(strong, document.createElement('br'), label);
+    summary.append(item);
+  }
+
+  const hidden = snapshot.files.filter(file => hiddenFiles.has(file.path));
+  renderFileStateList(
+    $('hiddenFileList'),
+    hidden,
+    file => fileStateRow(file, [{
+      label: 'Show',
+      run: () => {
+        hiddenFiles.delete(file.path);
+        selectFile(file);
+        setStatus(`Restored hidden file: ${file.path}`, 'success');
+      },
+    }]),
+    'No hidden files.',
+  );
+
+  const reviewed = snapshot.files.filter(file => reviewedFiles.has(file.path));
+  renderFileStateList(
+    $('reviewedFileList'),
+    reviewed,
+    file => fileStateRow(file, [
+      {label: 'Open', run: () => selectFile(file)},
+      {
+        label: 'Unreview',
+        run: () => {
+          reviewedFiles.delete(file.path);
+          reviewedAtByFile.delete(file.path);
+          selectFile(file);
+          setStatus(`Marked unreviewed: ${file.path}`, 'success');
+        },
+      },
+    ]),
+    'No reviewed files.',
+  );
+
+  $('restoreHidden').disabled = hiddenFiles.size === 0;
+  $('saveReviewed').disabled = reviewedFiles.size === 0;
+  $('printReviewed').disabled = reviewedFiles.size === 0;
 }
 
 function renderTree() {
@@ -792,7 +1111,9 @@ function renderTree() {
   host.replaceChildren();
   renderNode(treeFrom(visible), host);
   const noteCount = [...notesByChange.values()].filter(value => value.trim()).length;
-  $('fileCount').textContent = `${snapshot.files.length} changed file${snapshot.files.length === 1 ? '' : 's'} · ${noteCount} note${noteCount === 1 ? '' : 's'}`;
+  const remaining = snapshot.files.filter(fileIsActive).length;
+  $('fileCount').textContent = `${remaining} remaining · ${reviewedFiles.size} reviewed · ${hiddenFiles.size} hidden · ${noteCount} note${noteCount === 1 ? '' : 's'}`;
+  renderReviewMenu();
 }
 
 async function getGitContext(change) {
@@ -807,6 +1128,131 @@ async function getGitContext(change) {
   }).catch(error => ({dev: [], test: [], error: error.message}));
   gitContextCache.set(change.gitContextId, promise);
   return promise;
+}
+
+async function getFileContext(change, before, after) {
+  const response = await fetch(
+    `context/${encodeURIComponent(change.contextId)}?before=${before}&after=${after}`,
+    {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json'},
+    },
+  );
+  if (!response.ok) throw new Error(`File context request failed (${response.status})`);
+  return response.json();
+}
+
+function contextLineElement(line) {
+  const row = document.createElement('div');
+  row.className = 'context-line' + (line.changed ? ' changed' : '');
+  const number = document.createElement('div');
+  number.className = 'context-line-number';
+  number.textContent = line.number;
+  const code = document.createElement('div');
+  code.className = 'context-line-code';
+  code.textContent = line.text;
+  row.append(number, code);
+  return row;
+}
+
+function contextSideElement(label, side) {
+  const host = document.createElement('div');
+  host.className = 'context-side';
+  const title = document.createElement('div');
+  title.className = 'context-side-title';
+  title.textContent = label;
+  host.append(title);
+  if (!side.lines.length) {
+    const empty = document.createElement('div');
+    empty.className = 'no-context';
+    empty.textContent = 'No lines available on this side.';
+    host.append(empty);
+  } else {
+    side.lines.forEach(line => host.append(contextLineElement(line)));
+  }
+  return host;
+}
+
+async function loadFileContext(details, change) {
+  const state = contextStateByChange.get(change.key) ?? {before: 10, after: 10};
+  contextStateByChange.set(change.key, state);
+  const content = details.querySelector('.context-content');
+  const grid = content.querySelector('.context-grid');
+  grid.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'context-loading';
+  loading.textContent = 'Loading snapshot context…';
+  grid.append(loading);
+  try {
+    const context = await getFileContext(change, state.before, state.after);
+    grid.replaceChildren(
+      contextSideElement('Current TEST', context.test),
+      contextSideElement('Incoming DEV', context.dev),
+    );
+    const above = content.querySelector('[data-context-direction="above"]');
+    const below = content.querySelector('[data-context-direction="below"]');
+    above.disabled = !context.test.moreAbove && !context.dev.moreAbove;
+    below.disabled = !context.test.moreBelow && !context.dev.moreBelow;
+    details.querySelector('summary').textContent = `File context · ${state.before} above / ${state.after} below`;
+  } catch (error) {
+    grid.replaceChildren();
+    const message = document.createElement('div');
+    message.className = 'no-context';
+    message.textContent = error.message;
+    grid.append(message);
+  }
+}
+
+function fileContextPanel(change) {
+  const details = document.createElement('details');
+  details.className = 'file-context';
+  const summary = document.createElement('summary');
+  summary.textContent = 'File context · show nearby TEST and DEV lines';
+  const content = document.createElement('div');
+  content.className = 'context-content';
+  const controls = document.createElement('div');
+  controls.className = 'context-controls';
+  const above = document.createElement('button');
+  above.type = 'button';
+  above.dataset.contextDirection = 'above';
+  above.textContent = 'Show 10 more above';
+  const below = document.createElement('button');
+  below.type = 'button';
+  below.dataset.contextDirection = 'below';
+  below.textContent = 'Show 10 more below';
+  const reset = document.createElement('button');
+  reset.type = 'button';
+  reset.textContent = 'Reset context';
+  const grid = document.createElement('div');
+  grid.className = 'context-grid';
+  controls.append(above, below, reset);
+  content.append(controls, grid);
+  details.append(summary, content);
+
+  above.onclick = event => {
+    event.preventDefault();
+    const state = contextStateByChange.get(change.key) ?? {before: 10, after: 10};
+    state.before += 10;
+    contextStateByChange.set(change.key, state);
+    loadFileContext(details, change);
+  };
+  below.onclick = event => {
+    event.preventDefault();
+    const state = contextStateByChange.get(change.key) ?? {before: 10, after: 10};
+    state.after += 10;
+    contextStateByChange.set(change.key, state);
+    loadFileContext(details, change);
+  };
+  reset.onclick = event => {
+    event.preventDefault();
+    contextStateByChange.set(change.key, {before: 10, after: 10});
+    loadFileContext(details, change);
+  };
+  details.addEventListener('toggle', () => {
+    if (details.open) loadFileContext(details, change);
+  });
+  return details;
 }
 
 function commitElement(context) {
@@ -889,6 +1335,8 @@ function reviewPanel(change) {
     if (gitDetails.open) loadGitContext(gitDetails, change);
   });
 
+  const contextDetails = fileContextPanel(change);
+
   const noteWrap = document.createElement('div');
   noteWrap.className = 'note-wrap';
   const noteLabel = document.createElement('label');
@@ -911,7 +1359,7 @@ function reviewPanel(change) {
   });
   noteWrap.append(noteLabel, textarea);
 
-  panel.append(heading, gitDetails, noteWrap);
+  panel.append(heading, gitDetails, contextDetails, noteWrap);
   return panel;
 }
 
@@ -980,15 +1428,23 @@ function appendFocusedLines(host, view) {
 }
 
 function renderDiff() {
-  const file = visible.length ? snapshot.files[selected] : null;
+  const file = currentFile();
   if (!file) {
     $('path').textContent = 'No matching files';
     $('diff').innerHTML = '<div class="empty">No files match the search.</div>';
     return;
   }
+  if (contextFilePath !== file.path) {
+    contextStateByChange.clear();
+    contextFilePath = file.path;
+  }
+  $('hideFile').textContent = hiddenFiles.has(file.path) ? 'Show file' : 'Hide file';
+  $('reviewFile').textContent = reviewedFiles.has(file.path) ? 'Mark unreviewed' : 'Mark reviewed';
+  $('reviewFile').classList.toggle('active', reviewedFiles.has(file.path));
   const view = mode === 'focused' ? (file.focusedExpanded ?? file.focused) : file.raw;
   const summaryView = mode === 'focused' ? file.focused : file.raw;
-  $('path').textContent = file.path;
+  const stateSuffix = [reviewedFiles.has(file.path) ? 'REVIEWED' : '', hiddenFiles.has(file.path) ? 'HIDDEN' : ''].filter(Boolean).join(' · ');
+  $('path').textContent = stateSuffix ? `${file.path} · ${stateSuffix}` : file.path;
   $('focused').classList.toggle('active', mode === 'focused');
   $('raw').classList.toggle('active', mode === 'raw');
   const hidden = summaryView.noiseHidden + summaryView.whitespaceHidden + summaryView.orderHidden;
@@ -1011,20 +1467,52 @@ function renderDiff() {
 }
 
 function render() {
-  const selectedFile = snapshot.files[selected];
-  const query = $('search').value.trim().toLowerCase();
-  visible = snapshot.files.filter(file => file.path.toLowerCase().includes(query));
-  if (selectedFile && !visible.includes(selectedFile) && visible.length) selected = snapshot.files.indexOf(visible[0]);
+  visible = activeFilesMatchingSearch();
   renderTree();
   renderDiff();
 }
 
 function move(delta) {
   if (!visible.length) return;
-  const current = visible.indexOf(snapshot.files[selected]);
+  const current = visible.indexOf(currentFile());
   const next = visible[(Math.max(0, current) + delta + visible.length) % visible.length];
-  selected = snapshot.files.indexOf(next);
-  render();
+  selectFile(next);
+}
+
+function moveAfterStateChange(file) {
+  const next = nextActiveAfter(file);
+  if (next) selectFile(next);
+  else render();
+}
+
+function toggleCurrentHidden() {
+  const file = currentFile();
+  if (!file) return;
+  if (hiddenFiles.has(file.path)) {
+    hiddenFiles.delete(file.path);
+    setStatus(`Restored hidden file: ${file.path}`, 'success');
+    render();
+    return;
+  }
+  hiddenFiles.add(file.path);
+  moveAfterStateChange(file);
+  setStatus(`Hidden for this browser session: ${file.path}`, 'success');
+}
+
+function toggleCurrentReviewed() {
+  const file = currentFile();
+  if (!file) return;
+  if (reviewedFiles.has(file.path)) {
+    reviewedFiles.delete(file.path);
+    reviewedAtByFile.delete(file.path);
+    setStatus(`Marked unreviewed: ${file.path}`, 'success');
+    render();
+    return;
+  }
+  reviewedFiles.add(file.path);
+  reviewedAtByFile.set(file.path, new Date().toISOString());
+  moveAfterStateChange(file);
+  setStatus(`Marked reviewed: ${file.path}`, 'success');
 }
 
 function setAllHidden(open) {
@@ -1094,9 +1582,12 @@ function changesForExport(file) {
   });
 }
 
-async function buildPlaintextReview() {
+async function buildPlaintextReview(
+  files = snapshot.files,
+  {title = 'CONFIG REVIEW WORKBENCH', includeEmptyFiles = false} = {},
+) {
   const lines = [
-    'CONFIG REVIEW WORKBENCH',
+    title,
     '='.repeat(80),
     `Generated: ${new Date().toLocaleString()}`,
     `Snapshot:  ${snapshot.generatedAt}`,
@@ -1107,18 +1598,28 @@ async function buildPlaintextReview() {
     '',
   ];
   let exportedChanges = 0;
-  for (const file of snapshot.files) {
+  let exportedFiles = 0;
+  for (const file of files) {
     const view = mode === 'focused' ? file.focused : file.raw;
     const changes = changesForExport(file);
-    if (!changes.length) continue;
+    if (!changes.length && !includeEmptyFiles) continue;
+    exportedFiles++;
     lines.push('#'.repeat(80));
     lines.push(`FILE: ${file.path}`);
     lines.push(`STATUS: ${file.status}`);
+    if (reviewedFiles.has(file.path)) {
+      const reviewedAt = reviewedAtByFile.get(file.path);
+      lines.push(`REVIEWED: ${reviewedAt ? new Date(reviewedAt).toLocaleString() : 'yes'}`);
+    }
     if (mode === 'focused') {
       const hidden = view.noiseHidden + view.whitespaceHidden + view.orderHidden;
       lines.push(`VISIBLE: ${view.visibleChanges} · HIDDEN: ${hidden} · HANDLED: ${view.handled}`);
     }
     lines.push('');
+    if (!changes.length) {
+      lines.push('No exportable changes in the current view.');
+      lines.push('');
+    }
     for (let index = 0; index < changes.length; index++) {
       const change = changes[index];
       exportedChanges++;
@@ -1143,9 +1644,9 @@ async function buildPlaintextReview() {
       lines.push('');
     }
   }
-  if (!exportedChanges) return null;
+  if (!exportedFiles) return null;
   lines.push('='.repeat(80));
-  lines.push(`Exported ${exportedChanges} change${exportedChanges === 1 ? '' : 's'} from the ${mode === 'focused' ? 'Focused' : 'Raw'} view.`);
+  lines.push(`Exported ${exportedFiles} file${exportedFiles === 1 ? '' : 's'} and ${exportedChanges} change${exportedChanges === 1 ? '' : 's'} from the ${mode === 'focused' ? 'Focused' : 'Raw'} view.`);
   return lines.join('\n') + '\n';
 }
 
@@ -1169,40 +1670,92 @@ async function writeReview(destination, text, filename) {
   return filename;
 }
 
-async function saveReview() {
-  const visibleChangeCount = snapshot.files.reduce((total, file) => {
-    return total + changesForExport(file).length;
-  }, 0);
-  if (!visibleChangeCount) {
+async function saveReport({
+  files,
+  filename,
+  title,
+  includeEmptyFiles = false,
+  clearNotesDirty = false,
+}) {
+  if (!files.length) {
+    setStatus('No files are available for this report.', 'error');
+    return;
+  }
+  const hasChanges = files.some(file => changesForExport(file).length);
+  if (!hasChanges && !includeEmptyFiles) {
     setStatus('No visible changes in the current view; no review file was created.', 'error');
     return;
   }
-  const filename = exportFilename();
   let destination;
   try {
-    // Request the browser picker immediately while the click still counts as a
-    // user gesture; Git context is collected only after the destination exists.
     destination = await chooseDestination(filename);
   } catch (error) {
     setStatus(`Could not open save dialog: ${error.message}`, 'error');
     return;
   }
   if (destination.kind === 'cancelled') {
-    setStatus('Save cancelled; reviewer notes remain in this browser.', '');
+    setStatus('Save cancelled; temporary review state remains in this browser.', '');
     return;
   }
   setStatus('Collecting Git context and building plaintext review…', 'busy');
   try {
-    const text = await buildPlaintextReview();
+    const text = await buildPlaintextReview(files, {title, includeEmptyFiles});
     if (text === null) {
-      setStatus('No visible changes in the current view; no review file was created.', 'error');
+      setStatus('No files were available for the report.', 'error');
       return;
     }
     const savedName = await writeReview(destination, text, filename);
-    notesDirty = false;
+    if (clearNotesDirty) notesDirty = false;
     setStatus(`Saved plaintext review: ${savedName}`, 'success');
   } catch (error) {
     setStatus(`Could not save review: ${error.message}`, 'error');
+  }
+}
+
+async function saveReview() {
+  await saveReport({
+    files: snapshot.files,
+    filename: exportFilename(),
+    title: 'CONFIG REVIEW WORKBENCH',
+    clearNotesDirty: true,
+  });
+}
+
+function reviewedReportFiles() {
+  return snapshot.files.filter(file => reviewedFiles.has(file.path));
+}
+
+async function saveReviewedReport() {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  await saveReport({
+    files: reviewedReportFiles(),
+    filename: `config-review-reviewed-${mode}-${stamp}.txt`,
+    title: 'CONFIG REVIEW WORKBENCH — REVIEWED FILES',
+    includeEmptyFiles: true,
+  });
+}
+
+async function printReviewedReport() {
+  const files = reviewedReportFiles();
+  if (!files.length) {
+    setStatus('No files are marked reviewed; nothing was printed.', 'error');
+    return;
+  }
+  setStatus('Collecting Git context and preparing reviewed-files printout…', 'busy');
+  try {
+    const text = await buildPlaintextReview(files, {
+      title: 'CONFIG REVIEW WORKBENCH — REVIEWED FILES',
+      includeEmptyFiles: true,
+    });
+    if (text === null) {
+      setStatus('No reviewed files were available for printing.', 'error');
+      return;
+    }
+    $('printReport').textContent = text;
+    setStatus(`Opening print dialog for ${files.length} reviewed file${files.length === 1 ? '' : 's'}…`, 'success');
+    window.print();
+  } catch (error) {
+    setStatus(`Could not print reviewed report: ${error.message}`, 'error');
   }
 }
 
@@ -1211,7 +1764,17 @@ $('prev').onclick = () => move(-1);
 $('next').onclick = () => move(1);
 $('focused').onclick = () => { mode = 'focused'; renderDiff(); };
 $('raw').onclick = () => { mode = 'raw'; renderDiff(); };
+$('hideFile').onclick = toggleCurrentHidden;
+$('reviewFile').onclick = toggleCurrentReviewed;
 $('saveReview').onclick = saveReview;
+$('saveReviewed').onclick = saveReviewedReport;
+$('printReviewed').onclick = printReviewedReport;
+$('restoreHidden').onclick = () => {
+  hiddenFiles.clear();
+  $('reviewMenu').open = false;
+  render();
+  setStatus('Restored all hidden files.', 'success');
+};
 $('expandHidden').onclick = () => setAllHidden(true);
 $('collapseHidden').onclick = () => setAllHidden(false);
 $('expandGit').onclick = () => setAllGit(true);
@@ -1266,6 +1829,7 @@ class _ViewerServer(ThreadingHTTPServer):
     token: str
     workbench: Workbench
     git_lookup: GitLookup
+    context_lookup: ContextLookup
     git_cache: dict[str, bytes]
     git_cache_lock: threading.Lock
 
@@ -1304,17 +1868,31 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         self._send_bytes(status, body, "application/json; charset=utf-8")
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        path = self.path.split("?", 1)[0]
+        parsed = urlsplit(self.path)
+        path = parsed.path
         page_paths = {f"/{self.server.token}", f"/{self.server.token}/"}
         if path in page_paths:
             self._send_bytes(200, self.server.page, "text/html; charset=utf-8")
+            return
+
+        context_prefix = f"/{self.server.token}/context/"
+        if path.startswith(context_prefix):
+            context_id = unquote(path[len(context_prefix) :])
+            lookup = self.server.context_lookup.get(context_id)
+            if lookup is None or not context_id or "/" in context_id:
+                self.send_error(404)
+                return
+            query = parse_qs(parsed.query)
+            before = _bounded_query_int(query.get("before"), 10)
+            after = _bounded_query_int(query.get("after"), 10)
+            self._send_json(200, _context_payload(lookup, before=before, after=after))
             return
 
         prefix = f"/{self.server.token}/git/"
         if not path.startswith(prefix):
             self.send_error(404)
             return
-        context_id = path[len(prefix) :]
+        context_id = unquote(path[len(prefix) :])
         lookup = self.server.git_lookup.get(context_id)
         if lookup is None or not context_id or "/" in context_id:
             self.send_error(404)
@@ -1371,7 +1949,7 @@ class LocalWebDiffViewer:
         open_browser: bool = True,
     ) -> WebViewerLaunch:
         """Start a fresh snapshot server and optionally open the default browser."""
-        snapshot, git_lookup = _build_web_diff_snapshot(workbench)
+        snapshot, git_lookup, context_lookup = _build_web_diff_snapshot(workbench)
         page = _render_page(snapshot)
         self.stop()
         token = secrets.token_urlsafe(18)
@@ -1380,6 +1958,7 @@ class LocalWebDiffViewer:
         server.token = token
         server.workbench = workbench
         server.git_lookup = git_lookup
+        server.context_lookup = context_lookup
         server.git_cache = {}
         server.git_cache_lock = threading.Lock()
         thread = threading.Thread(

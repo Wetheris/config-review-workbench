@@ -2,8 +2,8 @@
 
 The web viewer is a browser-based companion for release reviewers who want to scan every
 currently changed file without navigating the terminal interface one file at a time. It
-remains review-only for DEV and TEST: it cannot merge, edit, mark complete, or modify the
-comparison configuration.
+remains review-only for DEV and TEST: it cannot merge, edit, update terminal completion, or
+modify the comparison configuration. Its hide/review/note state is temporary browser memory.
 
 ## Opening it
 
@@ -33,7 +33,10 @@ The viewer provides:
 - Expandable hidden sections in Focused mode
 - System, dark, and light themes under **View**
 - A review panel beneath every active change, plus every hidden Focused change when expanded
+- Incremental TEST/DEV file context around each change
+- Temporary hidden and reviewed file lists under **Review**
 - A **Save review…** action that exports the current view as plaintext
+- Reviewed-files save and print actions
 
 Keyboard shortcuts inside the browser:
 
@@ -78,6 +81,44 @@ Notes:
 The browser warns before closing a page that contains notes that have not been exported.
 Reopening the web viewer creates a new snapshot and does not restore notes from the old
 page.
+
+## Expandable file context
+
+Open **File context** beneath any active or expanded hidden change to inspect nearby lines
+from both TEST and DEV. The initial view includes ten lines above and below the changed range.
+Use **Show 10 more above** or **Show 10 more below** repeatedly to expand in chunks until the
+start or end of the file is reached.
+
+Context is loaded from the immutable snapshot captured when the web viewer opened. It does not
+reread the working tree. Context expansion is intentionally temporary: moving to another file
+clears all expanded-context ranges, so returning to the file starts compact again. Notes and
+review status are not cleared by file navigation.
+
+## Temporary file review workflow
+
+The file header provides two separate actions:
+
+- **Hide file** removes the file from the active tree because it is not useful to inspect now.
+- **Mark reviewed** records that the reviewer finished the file and moves it into the Reviewed
+  list.
+
+Hidden does not mean reviewed. The **Review** menu reports Remaining, Reviewed, and Hidden
+counts, lists both groups separately, and allows hidden files to be restored or reviewed files
+to be reopened and marked unreviewed. A file can remain reviewed even if it is also hidden;
+reviewed status controls reviewed-report inclusion, while hidden status only controls active
+navigation.
+
+All of this state is held in JavaScript memory. Refreshing or closing the page resets hidden
+files, reviewed files, review timestamps, notes, and context expansion. Nothing is written to
+Git, DEV, TEST, `.config-review.yaml`, browser storage, or the terminal review session.
+
+### Reviewed-files reports
+
+The Review menu can **Save reviewed report…** as plaintext or **Print reviewed report…** using
+the browser print dialog. These reports contain only files explicitly marked reviewed and
+include the current Focused or Raw changes, line ranges, Git context, notes, and the time each
+file was marked reviewed. Reviewed files with no exportable changes in the current mode still
+appear so the report accurately reflects the review checklist.
 
 ## Plaintext export
 
@@ -127,7 +168,8 @@ The viewer remains conservative:
 - The URL contains a random token and the server returns `404` for every other path.
 - There are no endpoints for edits, merges, commands, notes, exports, or arbitrary file
   writes.
-- The only additional endpoint returns Git commit metadata for a known snapshot change.
+- Read-only endpoints return Git metadata or bounded nearby lines only for a known snapshot
+  change identifier.
 - Plaintext export is performed by the browser only after an explicit save action.
 - The server exposes rendered diff data only; it cannot browse arbitrary filesystem paths.
 - All HTML, CSS, and JavaScript is embedded. It loads no external assets and sends no
@@ -157,7 +199,7 @@ The tool intentionally does not bind to a public interface to make remote access
 The viewer still does not include:
 
 - editing or merge actions;
-- mark-complete or undo controls;
+- terminal mark-complete or undo controls;
 - filter configuration;
 - live filesystem watching;
 - persistent/shared comments; or

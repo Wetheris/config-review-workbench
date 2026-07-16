@@ -232,8 +232,18 @@ Every active change includes a review panel. Hidden Focused changes receive the 
 - **Git context** is loaded on demand and shows the latest relevant incoming DEV commit
   message first, with current TEST history underneath. Exact-line blame is preferred and
   the latest file commit is used as a fallback.
+- **File context** shows nearby TEST and DEV lines. Each click can add ten more lines above
+  or below until the beginning or end of the file is reached. Expanded context resets when
+  the reviewer moves to another file.
 - A deployment-note field lets the reviewer record questions, release checks, or follow-up
   work while moving through the changed files.
+
+The browser also has temporary file-level review state. **Hide file** removes a file from
+the active tree without calling it reviewed. **Mark reviewed** moves it into the Reviewed
+list and includes it in reviewed-files reports. The **Review** menu can restore hidden files,
+reopen or unreview reviewed files, save a plaintext reviewed-files report, or open the
+browser print dialog for that report. These choices exist only in the current page and reset
+when the viewer is refreshed or closed.
 
 Use **Save review…** to export changes in the current Focused or Raw mode, their Git
 context, and inline notes to a plaintext `.txt` file. Focused export includes active changes
@@ -244,14 +254,17 @@ until exported and are never written into DEV, TEST, Git, or the workbench confi
 
 The viewer is still review-only for project content:
 
-- It contains no merge, edit, completion, undo, or filter-configuration actions.
+- It contains no merge, edit, terminal-completion, undo, or filter-configuration actions.
+  Browser-only Reviewed status is temporary review metadata and does not update the terminal
+  workbench session.
 - It serves an in-memory snapshot and does not reread files in the background. Reopen it
   from the terminal to refresh after files or filters change.
 - It binds only to `127.0.0.1` on a random port and uses a random URL token.
 - HTML, CSS, and JavaScript are bundled locally; no CDN, telemetry, or external request is
   used.
-- The server exposes only diff presentation data and read-only Git metadata for known
-  changes. It does not provide arbitrary file access or a file-write endpoint.
+- The server exposes only diff presentation data, bounded snapshot context, and read-only
+  Git metadata for known changes. It does not provide arbitrary file access or a file-write
+  endpoint.
 
 Under WSL, the launcher uses one Windows browser handoff instead of trying multiple Linux
 openers, avoiding duplicate tabs and noisy `gio` errors. When a browser cannot be opened
