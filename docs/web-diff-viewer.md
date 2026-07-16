@@ -29,6 +29,9 @@ The viewer provides:
 - **Focused**, which mirrors the workbench's current noise and display filters
 - **Raw**, which shows the complete literal text comparison
 - TEST and DEV line-number gutters
+- Visible vertical and horizontal scrollbars for the file tree and diff pane
+- A compact **View** menu with System, Dark, and Light themes
+- Click-to-expand hidden sections in Focused mode, plus Expand all and Collapse all actions
 - The current file status, visible-change count, and hidden/handled summary
 
 Keyboard shortcuts inside the browser:
@@ -38,7 +41,26 @@ Keyboard shortcuts inside the browser:
 | `[` / `]` | Previous or next changed file |
 | `f` | Focused view |
 | `r` | Raw view |
+| `e` | Expand or collapse every hidden Focused section |
 | `/` | Focus the filename search |
+
+### Focused hidden sections
+
+Focused mode keeps filtered differences collapsed initially. Each purple hidden-difference
+row is interactive: click it to reveal the exact TEST and DEV lines without switching to
+Raw mode. Use **View → Expand all** or **View → Collapse all** to control every hidden
+section in the current file at once. Raw mode remains the literal authoritative comparison.
+
+### Theme and scrolling
+
+The **View** menu provides System, Dark, and Light themes for the current browser page.
+System follows the browser or operating-system preference. The choice is intentionally
+session-only because the viewer starts on a random local port for each snapshot.
+
+The file tree and diff pane use native browser scrolling with a stable scrollbar gutter and
+light styling for visibility. Browser and operating-system accessibility settings can still
+choose overlay scrollbars, but the page keeps enough space so appearing scrollbars do not
+shift the diff layout.
 
 ## Snapshot behavior
 

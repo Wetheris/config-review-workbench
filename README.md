@@ -222,8 +222,10 @@ larger files.
 Press `w` from the main file list to open a browser overview of all currently changed
 files. The left side is a searchable directory tree; selecting a file opens its diff.
 Use **Focused** for the same filtered quick-review presentation used by the terminal, or
-**Raw** for the complete literal TEST-to-DEV diff. Previous/next buttons and `[` / `]`
-move between changed files.
+**Raw** for the complete literal TEST-to-DEV diff. Hidden Focused sections can be expanded
+individually, while the compact **View** menu provides expand/collapse-all actions and
+System, Dark, or Light themes. The file tree and diff pane have visible native scrollbars.
+Previous/next buttons and `[` / `]` move between changed files.
 
 The viewer is deliberately narrow in scope:
 
