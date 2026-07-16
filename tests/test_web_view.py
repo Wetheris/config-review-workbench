@@ -358,6 +358,7 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Copy displayed diff" in page
     assert "displayedDiffText" in page
     assert "Copied the displayed redacted diff, including line numbers." in page
+    assert "Copied the displayed diff with original values and line numbers." in page
     assert "context-gap" in page
     assert "Show 10 more lines" in page
     assert "intraline" in page
@@ -375,7 +376,10 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "hiddenChanges" in page
     assert "included because it has a note" in page
     assert "fetch(`git/${encodeURIComponent(change.gitContextId)}`" in page
-    assert "Last changed in ${preferred.side} · by " in page
+    assert "Last changed in ${side} · by " in page
+    assert "firstChangedLineRow" in page
+    assert "line-git-context" in page
+    assert "Hide Git context" in page
     assert "Open the related merge request for this commit" in page
     assert "createWritable" in page
     assert "lineNumberElement" in page
@@ -387,12 +391,57 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "display and exports are redacted" in page
     assert "original snapshot still exists inside this local page" in page
     assert "privateOldLines" in page
-    assert "$('copyDiff').hidden = !privacyMode" in page
+    assert "$('copyDiff').hidden = false" in page
+    assert "Copy the currently displayed diff with original values" in page
     assert "noteEditorsOpen = new Set()" in page
     assert "inlineGitContextKeys = new Set()" in page
     assert "if (!privacyMode && noteEditorsOpen.has(change.key))" in page
-    assert "if (!privacyMode && inlineGitContextKeys.has(change.key))" in page
+    assert "renderOpenGitContexts(view)" in page
+    assert "if (privacyMode || !inlineGitContextKeys.has(change.key)) return" in page
     assert "Git context · show latest incoming commit message" not in page
+
+
+def test_web_git_context_uses_first_changed_line_on_each_side(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    original = "one: base\ntwo: base\n"
+    (source / "values.yaml").write_text(original, encoding="utf-8")
+    (target / "values.yaml").write_text(original, encoding="utf-8")
+
+    _git(root, "init")
+    _git(root, "config", "user.name", "Initial Author")
+    _git(root, "config", "user.email", "initial@example.test")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "Initial configuration")
+
+    (target / "values.yaml").write_text("one: red-first\ntwo: base\n", encoding="utf-8")
+    _git(root, "add", "test/values.yaml")
+    _git(root, "commit", "-m", "Update TEST first line")
+    (target / "values.yaml").write_text("one: red-first\ntwo: red-second\n", encoding="utf-8")
+    _git(root, "add", "test/values.yaml")
+    _git(root, "commit", "-m", "Update TEST second line")
+
+    (source / "values.yaml").write_text("one: green-first\ntwo: base\n", encoding="utf-8")
+    _git(root, "add", "dev/values.yaml")
+    _git(root, "commit", "-m", "Update DEV first line")
+    (source / "values.yaml").write_text("one: green-first\ntwo: green-second\n", encoding="utf-8")
+    _git(root, "add", "dev/values.yaml")
+    _git(root, "commit", "-m", "Update DEV second line")
+
+    workbench = Workbench(_settings(root))
+    snapshot, git_lookup, _context_lookup = web_view._build_web_diff_snapshot(workbench)
+    change = snapshot["files"][0]["focused"]["changes"][0]
+    record, block = git_lookup[change["gitContextId"]]
+
+    payload = web_view._git_context_payload(workbench, record, block)
+
+    assert len(payload["test"]) == 1
+    assert payload["test"][0]["subject"] == "Update TEST first line"
+    assert len(payload["dev"]) == 1
+    assert payload["dev"][0]["subject"] == "Update DEV first line"
 
 
 def test_wsl_browser_launcher_uses_one_windows_command(

@@ -48,7 +48,7 @@ from .workbench import (
 from .plain import (
     format_display_line,
 )
-from .web_view import _PrivacyRedactor, _build_web_diff_snapshot
+from .web_view import _PrivacyRedactor, _build_web_diff_snapshot, _render_page
 
 
 def run_regression_tests() -> int:
@@ -124,6 +124,19 @@ def run_regression_tests() -> int:
             check(
                 "web inline Git context can link to a related merge request",
                 test_web_commit_links_prefer_merge_request_context,
+            )
+
+            def test_web_git_context_is_per_side_and_copy_is_always_available() -> None:
+                page = _render_page({"files": []}).decode("utf-8")
+                assert "firstChangedLineRow" in page
+                assert "Last changed in ${side} · by " in page
+                assert "Hide Git context" in page
+                assert "$('copyDiff').hidden = false" in page
+                assert "Copied the displayed diff with original values" in page
+
+            check(
+                "web Git context annotates TEST and DEV lines and copy is always available",
+                test_web_git_context_is_per_side_and_copy_is_always_available,
             )
 
             def test_web_keyed_list_physical_timeline() -> None:

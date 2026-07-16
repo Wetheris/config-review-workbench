@@ -39,8 +39,8 @@ The viewer provides:
 - Exact changed-text emphasis inside paired red/green lines
 - Temporary hidden and reviewed file lists under **Review**
 - A **Save review…** action that exports the current view as plaintext
-- A privacy-only **Copy displayed diff** action that copies the visible redacted rows with
-  both TEST and DEV line-number columns
+- A **Copy displayed diff** action in both normal and privacy modes, including both TEST and
+  DEV line-number columns
 - Reviewed-files save and print actions
 
 Keyboard shortcuts inside the browser:
@@ -57,16 +57,20 @@ Keyboard shortcuts inside the browser:
 ## Per-change Git context
 
 Git context is not loaded or displayed automatically. Select **Add Git context** beneath a
-change to insert one compact row directly into that change panel:
+change to annotate the first changed line on each available side:
 
 ```text
-Last changed in DEV · by Example Author · Commit subject · a1b2c3d4
+- value: "test-value"
+  Last changed in TEST · by Test Author · Test commit subject · a1b2c3d4
++ value: "dev-value"
+  Last changed in DEV · by Dev Author · DEV commit subject · e5f6a7b8
 ```
 
-The incoming DEV side is preferred because it normally provides the most useful reason for
-a release change. The viewer tries `git blame` for the exact changed lines and falls back to
-the latest commit touching the file when line attribution is unavailable or the line is new.
-When no DEV context is available, TEST is used instead.
+TEST and DEV are resolved independently so each red/green side shows the history for that
+physical line. The viewer tries `git blame` for the exact first changed line and falls back to
+the latest commit touching that side's file when line attribution is unavailable or the line
+is new. Multi-line changes receive one annotation on the first changed line per side. While
+shown, the action becomes **Hide Git context**.
 
 When a GitLab merge commit or squash commit contains a recognizable merge-request reference,
 the abbreviated hash opens that merge request directly. Otherwise the hash opens the commit
@@ -196,8 +200,8 @@ While privacy mode is on, the browser also:
 - removes the per-change Git-context and note actions so author names, commit subjects, and
   reviewer-note contents are not shown;
 - replaces absolute DEV and TEST roots with generic labels in exports; and
-- displays **Copy displayed diff**, which copies only the currently visible redacted diff rows,
-  context-gap labels, and both line-number columns; and
+- keeps **Copy displayed diff** available, but copies only the currently visible redacted diff
+  rows, context-gap labels, and both line-number columns; and
 - adds `-private` to exported filenames.
 
 Privacy mode is deliberately conservative but heuristic. A secret stored under an innocent key,
@@ -252,7 +256,7 @@ The plaintext file contains:
 - each changed file and its status;
 - deterministic context labels and TEST-to-DEV line ranges;
 - removed and added lines;
-- the compact last-change context only where **Add Git context** was selected; and
+- separate TEST and DEV last-change context only where **Add Git context** was selected; and
 - non-empty reviewer notes.
 
 Microsoft Edge and other Chromium-based browsers use the browser's native file-save dialog

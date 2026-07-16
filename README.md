@@ -228,10 +228,11 @@ move between changed files. Hidden Focused sections can be expanded individually
 View menu provides system, dark, and light themes plus a session-only **Hide sensitive
 values** privacy toggle. Privacy mode substitutes stable aliases for recognized credentials,
 endpoints, personal references, and other sensitive values; hides Git context, remote links,
-and reviewer notes; applies the same redaction to plaintext exports; and reveals a **Copy
-displayed diff** button that copies the currently visible redacted rows with both line-number
-columns. This is a sharing aid, not a complete secret scanner: share copied privacy-mode text,
-a privacy-mode export, or a screenshot, never the viewer HTML, because the original local
+and reviewer notes; and applies the same redaction to plaintext exports and clipboard copies.
+**Copy displayed diff** is available in both modes and copies the currently visible rows with
+both line-number columns: original values in normal mode and redacted aliases in privacy mode.
+This is a sharing aid, not a complete secret scanner: share copied privacy-mode text, a
+privacy-mode export, or a screenshot, never the viewer HTML, because the original local
 snapshot remains inside the page so the toggle can be reversed.
 
 Removed and added lines keep their full red/green treatment, while the exact changed text
@@ -257,10 +258,12 @@ the nearest change or file boundary and resets when the reviewer moves to anothe
 Every active change includes a review panel. Hidden Focused changes receive the same panel when expanded:
 
 - A deterministic context label describes the type of configuration change.
-- **Add Git context** loads one compact inline `Last changed in DEV · by … · message · hash`
-  row. Exact-line blame is preferred and the latest file commit is used as a fallback. The
-  hash opens the related GitLab merge request when the commit message identifies one;
-  otherwise it opens the commit page, where GitLab shows related merge requests when known.
+- **Add Git context** annotates the first red TEST line and first green DEV line separately.
+  Each annotation shows `Last changed in TEST/DEV · by … · message · hash`. Exact-line blame
+  is preferred and the latest file commit is used as a fallback. The hash opens the related
+  GitLab merge request when the commit message identifies one; otherwise it opens the commit
+  page, where GitLab shows related merge requests when known. The same button becomes
+  **Hide Git context** while the annotations are visible.
 - **Add note** opens a deployment-note editor only for the changes the reviewer chooses to
   annotate, instead of placing an empty textarea under every change.
 

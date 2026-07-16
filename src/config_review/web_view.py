@@ -1095,7 +1095,19 @@ def _git_context_payload(
     record: FileRecord,
     block: ChangeBlock,
 ) -> dict[str, Any]:
-    test_context, dev_context = workbench._block_git_context(record, block)
+    # The browser annotates the first red TEST line and first green DEV line.
+    # Restrict blame to those exact physical lines so a newer commit elsewhere
+    # in a multi-line block cannot be shown beside the wrong row.
+    first_line_block = ChangeBlock(
+        tag=block.tag,
+        old_start=block.old_start,
+        old_end=min(block.old_start + 1, block.old_end),
+        new_start=block.new_start,
+        new_end=min(block.new_start + 1, block.new_end),
+        old_lines=list(block.old_lines[:1]),
+        new_lines=list(block.new_lines[:1]),
+    )
+    test_context, dev_context = workbench._block_git_context(record, first_line_block)
 
     def newest_first(items: list[GitCommitContext]) -> list[GitCommitContext]:
         return sorted(items, key=lambda item: item.date, reverse=True)
@@ -1525,13 +1537,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .review-actions button:hover { border-color: var(--muted); }
 .review-actions button.active { border-color: var(--accent); color: var(--accent); }
-.inline-git-context {
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--gutter);
+.line-git-context {
+  grid-column: 4 / -1;
+  padding: 2px 10px 5px;
   color: var(--text);
+  font: 12px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
+.line-git-context.no-context { color: var(--muted); }
 .inline-git-prefix { color: var(--muted); }
 .inline-git-author { font-weight: 700; }
 .inline-git-subject { color: var(--text); }
@@ -1541,7 +1555,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   text-decoration: none;
 }
 .inline-git-hash:hover, .inline-git-hash:focus-visible { text-decoration: underline; }
-.no-context { color: var(--muted); padding: 4px 0; }
 .note-wrap { padding: 10px 12px 12px; border-bottom: 1px solid var(--border); }
 .note-label { display: flex; justify-content: space-between; gap: 10px; color: var(--note); font-weight: 700; margin-bottom: 6px; }
 .note-help { color: var(--muted); font-weight: 400; font-size: 12px; }
@@ -1623,7 +1636,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <button id="hideFile" title="Temporarily remove this file from the active tree">Hide file</button>
         <button id="reviewFile" title="Mark this file reviewed for the temporary review report">Mark reviewed</button>
         <button id="saveReview" title="Save all current-view changes and reviewer notes as plaintext">Save review…</button>
-        <button id="copyDiff" type="button" hidden title="Copy the currently displayed redacted diff, including TEST and DEV line numbers">Copy displayed diff</button>
+        <button id="copyDiff" type="button" title="Copy the currently displayed diff, including TEST and DEV line numbers">Copy displayed diff</button>
         <details id="reviewMenu" class="view-menu">
           <summary>Review ▾</summary>
           <div class="view-menu-panel">
@@ -2076,45 +2089,81 @@ function contextGapElement(gap, position) {
 }
 
 
-function preferredCommitContext(context) {
-  if (context.dev?.length) return {side: 'DEV', commit: context.dev[0]};
-  if (context.test?.length) return {side: 'TEST', commit: context.test[0]};
+function commitContextForSide(context, side) {
+  const values = side === 'DEV' ? context.dev : context.test;
+  return values?.[0] ?? null;
+}
+
+function firstChangedLineRow(change, side) {
+  const isTest = side === 'TEST';
+  const start = Number(isTest ? change.testStart : change.devStart) + 1;
+  const end = Number(isTest ? change.testEnd : change.devEnd);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const attribute = isTest ? 'testLine' : 'devLine';
+  const expectedKinds = isTest
+    ? new Set(['remove', 'remove_note'])
+    : new Set(['add', 'add_note']);
+  for (const row of $('diff').querySelectorAll('.line')) {
+    if (![...expectedKinds].some(kind => row.classList.contains(kind))) continue;
+    const value = Number(row.dataset[attribute]);
+    if (Number.isFinite(value) && value >= start && value <= end) return row;
+  }
   return null;
 }
 
-async function loadInlineGitContext(host, change) {
-  host.textContent = 'Loading last-change context…';
-  const context = await getGitContext(change);
-  host.replaceChildren();
-  const preferred = preferredCommitContext(context);
-  if (!preferred) {
-    host.className = 'inline-git-context no-context';
-    host.textContent = context.error || 'No tracked commit context was available.';
-    return;
+function lineGitContextElement(side, context) {
+  const host = document.createElement('div');
+  host.className = 'line-git-context';
+  host.dataset.side = side;
+  const commit = commitContextForSide(context, side);
+  if (!commit) {
+    host.classList.add('no-context');
+    host.textContent = context.error || `No tracked ${side} commit context was available.`;
+    return host;
   }
 
   const prefix = document.createElement('span');
   prefix.className = 'inline-git-prefix';
-  prefix.textContent = `Last changed in ${preferred.side} · by `;
+  prefix.textContent = `Last changed in ${side} · by `;
   const author = document.createElement('span');
   author.className = 'inline-git-author';
-  author.textContent = preferred.commit.author || 'unknown author';
+  author.textContent = commit.author || 'unknown author';
   const subject = document.createElement('span');
   subject.className = 'inline-git-subject';
-  subject.textContent = ` · ${preferred.commit.subject || 'No commit subject'} · `;
-  const hash = preferred.commit.url ? document.createElement('a') : document.createElement('span');
+  subject.textContent = ` · ${commit.subject || 'No commit subject'} · `;
+  const hash = commit.url ? document.createElement('a') : document.createElement('span');
   hash.className = 'inline-git-hash';
-  hash.textContent = preferred.commit.hash || '—';
-  if (preferred.commit.url) {
-    hash.href = preferred.commit.url;
+  hash.textContent = commit.hash || '—';
+  if (commit.url) {
+    hash.href = commit.url;
     hash.target = '_blank';
     hash.rel = 'noopener noreferrer';
-    hash.title = preferred.commit.linkKind === 'merge request'
+    hash.title = commit.linkKind === 'merge request'
       ? 'Open the related merge request for this commit'
       : 'Open the commit page; GitLab lists related merge requests when available';
   }
   host.append(prefix, author, subject, hash);
   if (context.error) host.title = context.error;
+  return host;
+}
+
+async function renderInlineGitContext(change) {
+  if (privacyMode || !inlineGitContextKeys.has(change.key)) return;
+  const context = await getGitContext(change);
+  if (privacyMode || !inlineGitContextKeys.has(change.key)) return;
+  for (const side of ['TEST', 'DEV']) {
+    const row = firstChangedLineRow(change, side);
+    if (!row) continue;
+    row.querySelector(`:scope > .line-git-context[data-side="${side}"]`)?.remove();
+    row.append(lineGitContextElement(side, context));
+  }
+}
+
+function renderOpenGitContexts(view) {
+  if (privacyMode) return;
+  for (const change of allReviewChanges(view)) {
+    if (inlineGitContextKeys.has(change.key)) renderInlineGitContext(change);
+  }
 }
 
 function noteEditor(change) {
@@ -2172,24 +2221,23 @@ function reviewActionRow(panel, change) {
   const gitButton = document.createElement('button');
   gitButton.type = 'button';
   gitButton.textContent = inlineGitContextKeys.has(change.key)
-    ? 'Remove Git context'
+    ? 'Hide Git context'
     : 'Add Git context';
   gitButton.classList.toggle('active', inlineGitContextKeys.has(change.key));
   gitButton.onclick = () => {
-    const existing = panel.querySelector(':scope > .inline-git-context');
-    if (existing) {
-      existing.remove();
+    if (inlineGitContextKeys.has(change.key)) {
       inlineGitContextKeys.delete(change.key);
+      for (const side of ['TEST', 'DEV']) {
+        firstChangedLineRow(change, side)
+          ?.querySelector(`:scope > .line-git-context[data-side="${side}"]`)
+          ?.remove();
+      }
     } else {
       inlineGitContextKeys.add(change.key);
-      const host = document.createElement('div');
-      host.className = 'inline-git-context';
-      const note = panel.querySelector(':scope > .note-wrap');
-      panel.insertBefore(host, note ?? actions);
-      loadInlineGitContext(host, change);
+      renderInlineGitContext(change);
     }
     gitButton.textContent = inlineGitContextKeys.has(change.key)
-      ? 'Remove Git context'
+      ? 'Hide Git context'
       : 'Add Git context';
     gitButton.classList.toggle('active', inlineGitContextKeys.has(change.key));
   };
@@ -2236,12 +2284,6 @@ function reviewPanel(change) {
     panel.append(splitNotice);
   }
 
-  if (!privacyMode && inlineGitContextKeys.has(change.key)) {
-    const gitHost = document.createElement('div');
-    gitHost.className = 'inline-git-context';
-    panel.append(gitHost);
-    loadInlineGitContext(gitHost, change);
-  }
   if (!privacyMode && noteEditorsOpen.has(change.key)) panel.append(noteEditor(change));
   if (!privacyMode) panel.append(reviewActionRow(panel, change));
   return panel;
@@ -2375,6 +2417,7 @@ function renderDiff() {
   }
   if (mode === 'focused') appendFocusedLines(host, view);
   else appendRawLines(host, view);
+  renderOpenGitContexts(view);
   host.scrollTop = 0;
   host.scrollLeft = 0;
 }
@@ -2473,7 +2516,7 @@ function displayedDiffText() {
   const testWidth = Math.max(4, ...rows.map(row => row.test.length));
   const devWidth = Math.max(3, ...rows.map(row => row.dev.length));
   const lines = [
-    'CONFIG REVIEW WEB DIFF — REDACTED',
+    privacyMode ? 'CONFIG REVIEW WEB DIFF — REDACTED' : 'CONFIG REVIEW WEB DIFF',
     '='.repeat(80),
     `FILE: ${displayFilePath(file)}`,
     `VIEW: ${mode === 'focused' ? 'Focused' : 'Raw'}`,
@@ -2500,15 +2543,14 @@ function displayedDiffText() {
     const prefix = element.dataset.copyPrefix ?? ' ';
     const value = element.dataset.copyText ?? element.querySelector('.code')?.textContent ?? '';
     lines.push(`${test} | ${dev} | ${prefix} ${value}`.trimEnd());
+    for (const context of element.querySelectorAll(':scope > .line-git-context')) {
+      lines.push(`GIT ${context.dataset.side ?? ''}: ${context.textContent.trim()}`.trim());
+    }
   }
   return lines.join('\n') + '\n';
 }
 
 async function copyDisplayedDiff() {
-  if (!privacyMode) {
-    setStatus('Copy displayed diff is available only while sensitive values are hidden.', 'error');
-    return;
-  }
   const text = displayedDiffText();
   if (!text) {
     setStatus('No displayed diff is available to copy.', 'error');
@@ -2527,7 +2569,7 @@ async function copyDisplayedDiff() {
       if (!document.execCommand('copy')) throw new Error('browser copy command failed');
       textarea.remove();
     }
-    setStatus('Copied the displayed redacted diff, including line numbers.', 'success');
+    setStatus(privacyMode ? 'Copied the displayed redacted diff, including line numbers.' : 'Copied the displayed diff with original values and line numbers.', 'success');
   } catch (error) {
     setStatus(`Could not copy displayed diff: ${error.message}`, 'error');
   }
@@ -2549,10 +2591,21 @@ async function chooseDestination(filename) {
   return {kind: 'download', filename};
 }
 
-function formatInlineCommitLine(context) {
-  const preferred = preferredCommitContext(context);
-  if (!preferred) return context.error || 'No tracked commit context was available.';
-  return `Last changed in ${preferred.side} · by ${preferred.commit.author || 'unknown author'} · ${preferred.commit.subject || 'No commit subject'} · ${preferred.commit.hash || '—'}`;
+function formatInlineCommitLines(context, change) {
+  const lines = [];
+  for (const [side, hasLines] of [
+    ['TEST', change.oldLines.length > 0],
+    ['DEV', change.newLines.length > 0],
+  ]) {
+    if (!hasLines) continue;
+    const commit = commitContextForSide(context, side);
+    if (!commit) {
+      lines.push(context.error || `No tracked ${side} commit context was available.`);
+      continue;
+    }
+    lines.push(`Last changed in ${side} · by ${commit.author || 'unknown author'} · ${commit.subject || 'No commit subject'} · ${commit.hash || '—'}`);
+  }
+  return lines;
 }
 
 function changesForExport(file) {
@@ -2627,7 +2680,7 @@ async function buildPlaintextReview(
       lines.push('');
       if (!privacyMode && inlineGitContextKeys.has(change.key)) {
         const context = await getGitContext(change);
-        lines.push(formatInlineCommitLine(context));
+        lines.push(...formatInlineCommitLines(context, change));
         lines.push('');
       }
       const note = (notesByChange.get(change.key) ?? '').trim();
@@ -2772,7 +2825,10 @@ function applyPrivacyMode() {
   button.classList.toggle('active', privacyMode);
   button.setAttribute('aria-pressed', privacyMode ? 'true' : 'false');
   button.textContent = privacyMode ? 'Show original values' : 'Hide sensitive values';
-  $('copyDiff').hidden = !privacyMode;
+  $('copyDiff').hidden = false;
+  $('copyDiff').title = privacyMode
+    ? 'Copy the currently displayed redacted diff, including TEST and DEV line numbers'
+    : 'Copy the currently displayed diff with original values and TEST and DEV line numbers';
   $('viewMenu').open = false;
   gapStateById.clear();
   render();
