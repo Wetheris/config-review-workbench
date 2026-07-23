@@ -2981,7 +2981,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
             <button id="browseContextFiles" type="button" disabled>Browse changed files…</button>
           </div>
           <div id="contextMatchContext" class="context-editor-help"></div>
-          <div class="context-editor-help">Definitions are saved to <span id="contextEditFile"></span>. Editing a built-in entry creates a project-local override.</div>
+          <div class="context-editor-help">Definitions are saved to <span id="contextEditFile"></span>.</div>
         </div>
       </div>
       <div id="contextEditorError" class="context-editor-error" role="alert"></div>
@@ -3295,16 +3295,14 @@ function renderContextDetails(entry) {
   }
   const source = document.createElement('div');
   source.className = 'dictionary-source';
-  source.textContent = entry.source === 'built-in'
-    ? 'Source: built-in Config Review context catalog'
-    : `Source: ${entry.source}`;
+  source.textContent = `Source: ${entry.source}`;
   host.append(source);
   if (contextEditable) {
     const actions = document.createElement('div');
     actions.className = 'dictionary-detail-actions';
     const edit = document.createElement('button');
     edit.type = 'button';
-    edit.textContent = entry.source === 'built-in' ? 'Override definition' : 'Edit definition';
+    edit.textContent = 'Edit definition';
     edit.onclick = () => openContextEditor({entry});
     actions.append(edit);
     host.append(actions);
@@ -3493,7 +3491,7 @@ function openContextEditor({entry = null, suggestion = null} = {}) {
   };
   const titleValue = entry?.title ?? match.title ?? match.value ?? '';
   $('contextEditorTitle').textContent = entry
-    ? (entry.source === 'built-in' ? 'Override context definition' : 'Edit context definition')
+    ? 'Edit context definition'
     : 'Add context definition';
   $('contextEntryId').value = entry?.id ?? contextSlug(match.value || titleValue);
   $('contextEntryId').readOnly = Boolean(entry);

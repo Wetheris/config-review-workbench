@@ -7,7 +7,6 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -79,7 +78,7 @@ class ContextEntry:
     details: str = ""
     aliases: tuple[str, ...] = ()
     matches: tuple[ContextMatchRule, ...] = ()
-    source: str = "built-in"
+    source: str = "local"
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -300,14 +299,6 @@ def _load_document(text: str, *, source: str) -> list[ContextEntry]:
     return [_parse_entry(item, source=source) for item in raw_entries]
 
 
-def _built_in_text() -> str:
-    return (
-        resources.files("config_review")
-        .joinpath("context_catalog.yaml")
-        .read_text(encoding="utf-8")
-    )
-
-
 def context_override_paths(config_file: Path, source: Path, target: Path) -> tuple[Path, ...]:
     """Return unique, ordered local catalog locations relevant to a comparison."""
     candidates = [
@@ -326,15 +317,16 @@ def context_override_paths(config_file: Path, source: Path, target: Path) -> tup
 
 
 def load_context_catalog(config_file: Path, source: Path, target: Path) -> ContextCatalog:
-    """Load the bundled catalog and merge optional project-local entries by id."""
-    diagnostics: list[str] = []
-    try:
-        built_in = _load_document(_built_in_text(), source="built-in")
-    except (OSError, RuntimeError, ValueError) as exc:
-        return ContextCatalog((), (f"Built-in context dictionary could not be loaded: {exc}",))
+    """Load and merge optional local context dictionaries by entry id.
 
-    ordered_ids = [entry.id for entry in built_in]
-    entries_by_id = {entry.id: entry for entry in built_in}
+    No catalog is bundled with the application. A missing local dictionary is a
+    valid empty state; users can copy ``.config-review-context.example.yaml`` to
+    ``.config-review-context.yaml`` or create definitions from the web editor.
+    """
+    diagnostics: list[str] = []
+    ordered_ids: list[str] = []
+    entries_by_id: dict[str, ContextEntry] = {}
+
     for path in context_override_paths(config_file, source, target):
         if not path.is_file():
             continue

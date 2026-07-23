@@ -8,3 +8,6 @@ build/
 
 .config-review-reports/
 reports/
+
+# Local context definitions
+/.config-review-context.yaml

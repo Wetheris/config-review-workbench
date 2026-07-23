@@ -91,7 +91,7 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
         "configFile": str(root / ".config-review.yaml"),
         "canPersist": True,
     }
-    assert len(snapshot["contextCatalog"]["entries"]) >= 100
+    assert snapshot["contextCatalog"]["entries"] == []
     assert snapshot["contextCatalog"]["diagnostics"] == []
     assert change["testRange"] == "1"
     assert change["devRange"] == "1"
@@ -298,22 +298,52 @@ def test_snapshot_attaches_context_references_to_matching_yaml_lines(tmp_path: P
     target = root / "test"
     source.mkdir(parents=True)
     target.mkdir()
-    (source / "values.keycloak.yaml").write_text(
-        "keycloakx:\n  realm: eids-mstl\n  allowInsecureImages: true\n",
+    (root / ".config-review-context.yaml").write_text(
+        """\
+schemaVersion: 1
+entries:
+  - id: kubernetes-api-version
+    title: apiVersion
+    category: Kubernetes Resources
+    summary: Identifies the resource API group and version.
+    matches:
+      - type: yaml-key
+        value: apiVersion
+  - id: kubernetes-kind
+    title: kind
+    category: Kubernetes Resources
+    summary: Identifies the resource type.
+    matches:
+      - type: yaml-key
+        value: kind
+  - id: flux-helm-repository
+    title: HelmRepository
+    category: Flux / GitOps
+    summary: Flux resource that points to a Helm repository.
+    matches:
+      - type: yaml-value
+        value: HelmRepository
+""",
         encoding="utf-8",
     )
-    (target / "values.keycloak.yaml").write_text(
-        "keycloakx:\n  realm: old\n  allowInsecureImages: false\n",
+    (source / "resource.yaml").write_text(
+        "apiVersion: source.toolkit.fluxcd.io/v1\nkind: HelmRepository\n",
+        encoding="utf-8",
+    )
+    (target / "resource.yaml").write_text(
+        "apiVersion: source.toolkit.fluxcd.io/v1beta2\nkind: GitRepository\n",
         encoding="utf-8",
     )
 
     snapshot = build_web_diff_snapshot(Workbench(_settings(root)))
     lines = snapshot["files"][0]["raw"]["lines"]
 
-    realm = next(line for line in lines if line["text"] == "  realm: eids-mstl")
-    insecure = next(line for line in lines if line["text"] == "  allowInsecureImages: true")
-    assert "eids-mstl-realm" in realm["contextRefs"]
-    assert insecure["contextRefs"] == ["allow-insecure-images"]
+    api_version = next(
+        line for line in lines if line["text"] == "apiVersion: source.toolkit.fluxcd.io/v1"
+    )
+    kind = next(line for line in lines if line["text"] == "kind: HelmRepository")
+    assert "kubernetes-api-version" in api_version["contextRefs"]
+    assert kind["contextRefs"] == ["kubernetes-kind", "flux-helm-repository"]
 
 
 def test_snapshot_does_not_collect_git_context_eagerly(
@@ -841,13 +871,48 @@ def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
     tmp_path: Path,
 ):
     root = tmp_path / "project"
-    source = root / "alpha"
-    target = root / "test-ot"
-    source_file = source / "ms" / "config" / "values.yaml"
-    target_file = target / "ms" / "config" / "values.yaml"
+    source = root / "dev"
+    target = root / "test"
+    source_file = source / "config" / "values.yaml"
+    target_file = target / "config" / "values.yaml"
     source_file.parent.mkdir(parents=True)
     target_file.parent.mkdir(parents=True)
-    source_file.write_text("customSetting: alpha\n", encoding="utf-8")
+    (root / ".config-review-context.yaml").write_text(
+        """\
+schemaVersion: 1
+entries:
+  - id: development-environment
+    title: Development environment
+    category: Environments & Repository Layout
+    summary: Non-production development environment.
+    matches:
+      - type: path-segment
+        value: dev
+  - id: test-environment
+    title: Test environment
+    category: Environments & Repository Layout
+    summary: Environment used for integrated testing.
+    matches:
+      - type: path-segment
+        value: test
+  - id: config-directory
+    title: Configuration directory
+    category: Environments & Repository Layout
+    summary: Directory containing configuration files.
+    matches:
+      - type: path-segment
+        value: config
+  - id: helm-values-file
+    title: values.yaml
+    category: Helm & Packaging
+    summary: Helm values file.
+    matches:
+      - type: file-name
+        value: values.yaml
+""",
+        encoding="utf-8",
+    )
+    source_file.write_text("customSetting: dev\n", encoding="utf-8")
     target_file.write_text("customSetting: test\n", encoding="utf-8")
     settings = AppSettings(
         source=source,
@@ -864,14 +929,13 @@ def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
     file_data = snapshot["files"][0]
     path = file_data["contextPath"]
 
-    assert path["sourceEnvironment"]["text"] == "alpha"
-    assert path["sourceEnvironment"]["contextRefs"] == ["alpha-environment"]
-    assert path["sourceEnvironment"]["contextTargets"][0]["text"] == "alpha"
-    assert path["targetEnvironment"]["contextRefs"] == ["test-ot-environment"]
-    assert [part["text"] for part in path["parts"]] == ["ms", "config", "values.yaml"]
-    assert path["parts"][0]["contextRefs"] == ["mission-support-path"]
-    assert path["parts"][1]["contextRefs"] == ["config-directory"]
-    assert path["parts"][2]["contextRefs"] == ["values-yaml-file"]
+    assert path["sourceEnvironment"]["text"] == "dev"
+    assert path["sourceEnvironment"]["contextRefs"] == ["development-environment"]
+    assert path["sourceEnvironment"]["contextTargets"][0]["text"] == "dev"
+    assert path["targetEnvironment"]["contextRefs"] == ["test-environment"]
+    assert [part["text"] for part in path["parts"]] == ["config", "values.yaml"]
+    assert path["parts"][0]["contextRefs"] == ["config-directory"]
+    assert path["parts"][1]["contextRefs"] == ["helm-values-file"]
 
     custom_line = next(
         line for line in file_data["raw"]["lines"] if "customSetting:" in line["text"]
@@ -883,12 +947,12 @@ def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
     assert key_target["contextSuggestion"] == {
         "type": "yaml-path",
         "value": "customSetting",
-        "files": ["ms/config/values.yaml"],
+        "files": ["config/values.yaml"],
         "title": "customSetting",
         "clickedType": "YAML key",
         "clickedValue": "customSetting",
         "yamlPath": "customSetting",
-        "file": "ms/config/values.yaml",
+        "file": "config/values.yaml",
     }
 
 

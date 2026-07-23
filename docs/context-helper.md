@@ -1,8 +1,22 @@
 # Context Dictionary and Web Tooltips
 
-The web diff viewer includes a searchable context dictionary for E-IDS services, shared
-libraries, Helm packaging, GitLab CI/CD, GitOps, identity, selected FAA acronyms, and common
-operational terms.
+The web diff viewer can load a searchable, project-local context dictionary for Kubernetes,
+OpenShift, Helm, Flux, GitLab CI/CD, repository paths, services, and any other terms useful to a
+reviewer.
+
+No context catalog is bundled with the application. A fresh checkout starts with an empty
+dictionary so internal project definitions are never accidentally distributed. A generic,
+non-sensitive starter file is committed as:
+
+```text
+.config-review-context.example.yaml
+```
+
+Copy it to the ignored local filename to enable the examples:
+
+```bash
+cp .config-review-context.example.yaml .config-review-context.yaml
+```
 
 Select the `?` button in the web toolbar to turn context help on. Recognized YAML keys, value
 terms, and individual file-path segments receive a subtle hover indicator. Hover or keyboard-focus
@@ -11,13 +25,12 @@ one highlighted term for a short explanation. Select it to open the full diction
 The current file is shown as a segmented breadcrumb, for example:
 
 ```text
-alpha → test-ot / ms / config / values.yaml
+dev → test / services / config / values.yaml
 ```
 
 Each environment, directory, and file-name segment can have its own definition. Compound file
 names are split into useful targets while known compound terms are kept together. For example,
-`keycloak-helm-repo.yaml` can expose separate definitions for `keycloak`, `helm-repo`, and
-`yaml`.
+`sample-helm-repo.yaml` can expose separate definitions for `sample`, `helm-repo`, and `yaml`.
 
 ## Adding and editing definitions in the web viewer
 
@@ -25,9 +38,8 @@ When context help is enabled, undocumented YAML keys, scalar-value terms, or pat
 dashed hover indicator. Select one to open an **Add context definition** form. The form shows the
 clicked item type, exact value, file, and dotted YAML path when available.
 
-For an existing entry, open its dictionary details and select **Edit definition**. Built-in
-entries use **Override definition** because bundled definitions are not modified directly. The
-project-specific replacement is written to:
+For an existing entry, open its dictionary details and select **Edit definition**. Definitions are
+written to:
 
 ```text
 .config-review-context.yaml
@@ -39,7 +51,7 @@ The category field uses the existing dictionary categories as a dropdown and def
 Definitions are global by default. Enable **Limit this definition to specific files or paths**
 only when a generic key or value needs additional scope. The current comparison file is offered
 as the default scope, and **Browse changed files…** can select another repository-relative file.
-The field also accepts broader glob patterns such as `**/values.yaml` or `ms/config/**`.
+The field also accepts broader glob patterns such as `**/values.yaml` or `services/config/**`.
 
 The editor supports definitions for path segments, file names, exact YAML paths, YAML keys and
 values, environment variable names, commands, terms, and path patterns. Saving updates only the
@@ -49,6 +61,22 @@ Other files are re-matched lazily when they are opened.
 
 Context editing is unavailable in dry-run mode. Privacy mode turns context help off because
 service names and architecture descriptions may themselves be sensitive in screenshots.
+
+## Catalog locations and merge order
+
+The viewer checks these optional files in order:
+
+1. `.config-review-context.yaml` beside the active `.config-review.yaml`
+2. `.config-review-context.yaml` inside the selected source root
+3. `.config-review-context.yaml` inside the selected target root
+
+Later files replace earlier entries that use the same `id`. Missing files are treated as a valid
+empty state. An invalid file does not prevent the viewer from opening; the dictionary displays a
+diagnostic for that file and continues loading other valid local catalogs.
+
+The root `.config-review-context.yaml` is ignored by Git. Keep internal or project-specific
+entries there. The committed `.config-review-context.example.yaml` should contain only generic,
+non-sensitive examples.
 
 ## Opening the dictionary
 
@@ -61,7 +89,7 @@ supports full-text search across:
 - Aliases
 
 The entry list and detail pane scroll independently. Selecting an entry shows its full
-properties, matching rules, source, and edit or override action on the right.
+properties, matching rules, source file, and edit action on the right.
 
 The dictionary explains configuration; it does not decide whether a change is safe or
 automatically hide a difference.
@@ -79,12 +107,11 @@ Matching is intentionally conservative. The implementation supports:
 | `env-name` | Matches a Kubernetes-style `- name: VALUE` environment variable declaration |
 | `command` | Matches a command or literal pipeline expression inside a line |
 | `file-name` | Matches an exact file name such as `Chart.yaml` or `values.yaml` |
-| `path-segment` | Matches one directory or environment breadcrumb segment such as `alpha`, `ms`, or `config` |
+| `path-segment` | Matches one directory or environment breadcrumb segment such as `dev`, `test`, or `config` |
 | `path` | Matches a glob against the changed file's relative path |
 
-Rules may include `files` globs. The built-in GitLab keywords use file restrictions so a generic
-key such as `include` is documented in pipeline files without appearing on unrelated application
-YAML.
+Rules may include `files` globs. This lets a generic key such as `script` be documented in pipeline
+files without appearing on unrelated application YAML.
 
 A single line can contain multiple independent targets. Matching is applied in this order:
 
@@ -94,52 +121,41 @@ A single line can contain multiple independent targets. Matching is applied in t
 4. Known individual term
 5. Addable fallback token
 
-For example, `apiVersion: source.toolkit.fluxcd.io/v1` exposes `apiVersion`,
-`source.toolkit.fluxcd.io`, and `v1` separately. A broad entry such as `keycloak` highlights only
-that word inside a URL or file name instead of claiming the entire string.
+For example, `apiVersion: source.toolkit.fluxcd.io/v1` can expose `apiVersion`,
+`source.toolkit.fluxcd.io`, and `v1` separately. A broad entry highlights only its matching term
+inside a URL or file name instead of claiming the entire string.
 
 Path-only definitions are intentionally not attached to every YAML line inside that path. They
 appear only on the relevant breadcrumb segment, which keeps context highlighting precise.
 
 The matcher does not alter the Focused Diff, Raw Diff, noise filters, or comparison engine.
 
-## Adding project-specific entries manually
+## Adding entries manually
 
-Definitions can also be maintained directly in `.config-review-context.yaml` beside the active
-`.config-review.yaml`, or inside either selected comparison root:
+Definitions can be maintained directly in `.config-review-context.yaml`:
 
 ```yaml
 schemaVersion: 1
 
 entries:
-  - id: mission-support-directory
-    title: MS — Mission Support
+  - id: config-directory
+    title: Configuration directory
     category: Repository Layout
-    summary: Contains Mission Support services and configuration.
+    summary: Contains deployment or application configuration files.
     matches:
       - type: path-segment
-        value: ms
+        value: config
 
-  - id: swim-routing-destination
-    title: SWIM routing destination
+  - id: application-endpoint
+    title: Application endpoint
     category: Project Context
-    summary: >
-      Defines the internal messaging destination used by SWIM Relay.
-    details: >
-      An incorrect destination can prevent downstream services from receiving
-      national SWIM updates.
-    aliases:
-      - swim topic
+    summary: Defines the URL used to reach an application dependency.
     matches:
       - type: yaml-key
-        value: destination
+        value: endpoint
         files:
-          - "**/swim-relay/**"
+          - "**/values.yaml"
 ```
-
-A project-local entry with the same `id` as a built-in entry replaces the built-in definition.
-Invalid local files do not prevent the viewer from opening. The built-in catalog remains
-available, and the dictionary displays a diagnostic describing the invalid file.
 
 ## Catalog design guidance
 

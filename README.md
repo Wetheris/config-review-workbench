@@ -305,11 +305,11 @@ require local port forwarding before that URL is reachable
 from your workstation. See [Local Web Diff Viewer](docs/web-diff-viewer.md) for the exact
 review, export, and security behavior.
 
-The web viewer also includes a built-in E-IDS context catalog. Select the `?` button to turn
-context help on, then hover or keyboard-focus recognized services, Helm commands, GitLab
-keywords, GitOps concepts, identity settings, and selected operational terms for a short
-explanation. Select a recognized line to open the complete dictionary entry. Repositories can
-add or override definitions through `.config-review-context.yaml`. See
+The web viewer can load a project-local context dictionary. Select the `?` button to turn
+context help on, then hover or keyboard-focus recognized YAML keys, values, commands, services,
+and path segments for a short explanation. No definitions are bundled with the application.
+Copy `.config-review-context.example.yaml` to the ignored `.config-review-context.yaml`, or add
+definitions directly from the web editor. See
 [Context Dictionary and Web Tooltips](docs/context-helper.md).
 
 ### File Actions and visible-diff reports
