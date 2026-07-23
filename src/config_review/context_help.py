@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -15,11 +17,13 @@ except ImportError:  # pragma: no cover - handled by the normal build dependency
     YAML = None  # type: ignore[assignment]
 
 _CONTEXT_FILENAME = ".config-review-context.yaml"
+_CONTEXT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SUPPORTED_MATCH_TYPES = {
     "command",
     "env-name",
     "file-name",
     "path",
+    "path-segment",
     "term",
     "yaml-key",
     "yaml-value",
@@ -37,6 +41,13 @@ class ContextMatchRule:
     type: str
     value: str
     files: tuple[str, ...] = ()
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "value": self.value,
+            "files": list(self.files),
+        }
 
 
 @dataclass(slots=True, frozen=True)
@@ -60,6 +71,7 @@ class ContextEntry:
             "summary": self.summary,
             "details": self.details,
             "aliases": list(self.aliases),
+            "matches": [rule.payload() for rule in self.matches],
             "source": self.source,
         }
 
@@ -85,7 +97,11 @@ class ContextCatalog:
         """Return conservative, ordered context matches for one rendered line."""
         matches: list[str] = []
         for entry in self.entries:
-            if any(_rule_matches(rule, relative_path, text) for rule in entry.matches):
+            if any(
+                rule.type not in {"path", "path-segment", "file-name"}
+                and _rule_matches(rule, relative_path, text)
+                for rule in entry.matches
+            ):
                 matches.append(entry.id)
                 if len(matches) >= limit:
                     break
@@ -107,6 +123,34 @@ class ContextCatalog:
                     if len(found) >= limit:
                         return found
         return found
+
+    def match_path_segment(
+        self,
+        relative_path: str,
+        segment: str,
+        *,
+        is_filename: bool = False,
+        limit: int = 4,
+    ) -> list[str]:
+        """Return definitions attached to one visible path breadcrumb segment."""
+        matches: list[str] = []
+        for entry in self.entries:
+            for rule in entry.matches:
+                if not _file_allowed(rule.files, relative_path):
+                    continue
+                if rule.type == "path-segment" and rule.value.casefold() == segment.casefold():
+                    matches.append(entry.id)
+                    break
+                if (
+                    is_filename
+                    and rule.type == "file-name"
+                    and rule.value.casefold() == segment.casefold()
+                ):
+                    matches.append(entry.id)
+                    break
+            if len(matches) >= limit:
+                break
+        return matches
 
     def match_path(self, relative_path: str, *, limit: int = 4) -> list[str]:
         """Return entries with explicit path or file-name rules for a changed file."""
@@ -166,6 +210,10 @@ def _parse_entry(value: object, *, source: str) -> ContextEntry:
     if not isinstance(value, Mapping):
         raise ValueError("context entries must be mappings")
     entry_id = _as_string(value.get("id"), field="entry.id")
+    if not _CONTEXT_ID_RE.fullmatch(entry_id):
+        raise ValueError(
+            "entry.id may contain only letters, numbers, dots, underscores, and hyphens"
+        )
     title = _as_string(value.get("title"), field=f"entry {entry_id!r} title")
     category = _as_string(value.get("category"), field=f"entry {entry_id!r} category")
     summary = _as_string(value.get("summary"), field=f"entry {entry_id!r} summary")
@@ -254,6 +302,135 @@ def load_context_catalog(config_file: Path, source: Path, target: Path) -> Conte
     )
 
 
+def context_edit_path(config_file: Path) -> Path:
+    """Return the project-local dictionary file used by the web editor."""
+    return config_file.expanduser().resolve().parent / _CONTEXT_FILENAME
+
+
+def context_line_suggestion(relative_path: str, text: str) -> dict[str, Any] | None:
+    """Suggest a conservative rule for an undocumented rendered YAML line."""
+    env_name = _ENV_NAME_RE.match(text)
+    if env_name is not None:
+        value = _strip_scalar(env_name.group("value"))
+        if value:
+            return {
+                "type": "env-name",
+                "value": value,
+                "files": [relative_path],
+                "title": value,
+            }
+
+    assignment = _YAML_ASSIGNMENT_RE.match(text)
+    if assignment is None:
+        return None
+    key = assignment.group("key")
+    return {
+        "type": "yaml-key",
+        "value": key,
+        "files": [relative_path],
+        "title": key,
+    }
+
+
+def context_path_part_payload(
+    catalog: ContextCatalog,
+    relative_path: str,
+    segment: str,
+    *,
+    is_filename: bool = False,
+) -> dict[str, Any]:
+    """Build one path breadcrumb with matches and an add-definition suggestion."""
+    match_type = "file-name" if is_filename else "path-segment"
+    return {
+        "text": segment,
+        "contextRefs": catalog.match_path_segment(
+            relative_path,
+            segment,
+            is_filename=is_filename,
+        ),
+        "contextSuggestion": {
+            "type": match_type,
+            "value": segment,
+            "files": [],
+            "title": segment,
+        },
+    }
+
+
+def _entry_document(entry: ContextEntry) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "id": entry.id,
+        "title": entry.title,
+        "category": entry.category,
+        "summary": entry.summary,
+    }
+    if entry.details:
+        result["details"] = entry.details
+    if entry.aliases:
+        result["aliases"] = list(entry.aliases)
+    result["matches"] = [rule.payload() for rule in entry.matches]
+    return result
+
+
+def upsert_context_entry(
+    config_file: Path,
+    value: Mapping[str, object],
+) -> tuple[ContextEntry, Path]:
+    """Add or override one definition in the project-local context dictionary."""
+    path = context_edit_path(config_file)
+    entry = _parse_entry(value, source=str(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f"refusing to replace symlinked context dictionary: {path}")
+    file_mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+
+    if path.is_file():
+        existing_text = path.read_text(encoding="utf-8")
+        # Validate the complete file before attempting to preserve and modify it.
+        _load_document(existing_text, source=str(path))
+        yaml = YAML()
+        document = yaml.load(existing_text)
+    else:
+        yaml = YAML()
+        document = {"schemaVersion": 1, "entries": []}
+
+    if not isinstance(document, Mapping) or document.get("schemaVersion") != 1:
+        raise ValueError("context dictionary schemaVersion must be 1")
+    raw_entries = document.get("entries")
+    if not isinstance(raw_entries, list):
+        raise ValueError("context dictionary entries must be a list")
+
+    replacement = _entry_document(entry)
+    replaced = False
+    for index, raw_entry in enumerate(raw_entries):
+        if isinstance(raw_entry, Mapping) and raw_entry.get("id") == entry.id:
+            raw_entries[index] = replacement
+            replaced = True
+            break
+    if not replaced:
+        raw_entries.append(replacement)
+
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.width = 100
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as stream:
+        temporary = Path(stream.name)
+        yaml.dump(document, stream)
+    try:
+        os.chmod(temporary, file_mode)
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+    return entry, path
+
+
 def _file_allowed(patterns: tuple[str, ...], relative_path: str) -> bool:
     if not patterns:
         return True
@@ -287,6 +464,9 @@ def _rule_matches(rule: ContextMatchRule, relative_path: str, text: str) -> bool
     if rule.type == "path":
         normalized = relative_path.replace("\\", "/")
         return fnmatch.fnmatch(normalized.lower(), rule.value.lower())
+    if rule.type == "path-segment":
+        normalized = relative_path.replace("\\", "/")
+        return any(part.casefold() == rule.value.casefold() for part in Path(normalized).parts)
     if rule.type == "file-name":
         return Path(relative_path).name.lower() == rule.value.lower()
     if rule.type == "term":

@@ -1,0 +1,11 @@
+schemaVersion: 1
+entries:
+  - id: interval
+    title: interval
+    category: Project Context
+    summary: test
+    matches:
+      - type: yaml-key
+        value: interval
+        files:
+          - ms/keycloak-helm-repo.yaml

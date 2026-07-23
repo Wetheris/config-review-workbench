@@ -825,3 +825,114 @@ def test_web_viewer_can_browse_and_replace_comparison_directories(tmp_path: Path
         assert "Directory does not exist" in error["error"]
     finally:
         viewer.stop()
+
+
+def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
+    tmp_path: Path,
+):
+    root = tmp_path / "project"
+    source = root / "alpha"
+    target = root / "test-ot"
+    source_file = source / "ms" / "config" / "values.yaml"
+    target_file = target / "ms" / "config" / "values.yaml"
+    source_file.parent.mkdir(parents=True)
+    target_file.parent.mkdir(parents=True)
+    source_file.write_text("customSetting: alpha\n", encoding="utf-8")
+    target_file.write_text("customSetting: test\n", encoding="utf-8")
+    settings = AppSettings(
+        source=source,
+        target=target,
+        config_file=root / ".config-review.yaml",
+        context=3,
+        include_secrets=False,
+        edit_command="",
+        vimdiff_command="",
+        dry_run=False,
+    )
+
+    snapshot = build_web_diff_snapshot(Workbench(settings))
+    file_data = snapshot["files"][0]
+    path = file_data["contextPath"]
+
+    assert path["sourceEnvironment"] == {
+        "text": "alpha",
+        "contextRefs": ["alpha-environment"],
+        "contextSuggestion": {
+            "type": "path-segment",
+            "value": "alpha",
+            "files": [],
+            "title": "alpha",
+        },
+    }
+    assert path["targetEnvironment"]["contextRefs"] == ["test-ot-environment"]
+    assert [part["text"] for part in path["parts"]] == ["ms", "config", "values.yaml"]
+    assert path["parts"][0]["contextRefs"] == ["mission-support-path"]
+    assert path["parts"][1]["contextRefs"] == ["config-directory"]
+    assert path["parts"][2]["contextRefs"] == ["values-yaml-file"]
+
+    custom_line = next(
+        line for line in file_data["raw"]["lines"] if "customSetting:" in line["text"]
+    )
+    assert custom_line["contextRefs"] == []
+    assert custom_line["contextSuggestion"] == {
+        "type": "yaml-key",
+        "value": "customSetting",
+        "files": ["ms/config/values.yaml"],
+        "title": "customSetting",
+    }
+
+
+def test_web_context_editor_saves_project_definition_and_refreshes_page(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.yaml").write_text("customSetting: dev\n", encoding="utf-8")
+    (target / "values.yaml").write_text("customSetting: test\n", encoding="utf-8")
+
+    viewer = LocalWebDiffViewer()
+    try:
+        launch = viewer.open(Workbench(_settings(root)), open_browser=False)
+        request = urllib.request.Request(
+            launch.url + "context-entry",
+            data=json.dumps(
+                {
+                    "entry": {
+                        "id": "custom-setting",
+                        "title": "Custom setting",
+                        "category": "Project Context",
+                        "summary": "Explains the custom setting.",
+                        "details": "Saved from the local web viewer.",
+                        "aliases": [],
+                        "matches": [
+                            {
+                                "type": "yaml-key",
+                                "value": "customSetting",
+                                "files": ["values.yaml"],
+                            }
+                        ],
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+            assert payload["ok"] is True
+            assert payload["entryId"] == "custom-setting"
+            assert payload["path"] == str(root / ".config-review-context.yaml")
+
+        context_file = root / ".config-review-context.yaml"
+        assert context_file.is_file()
+        assert "custom-setting" in context_file.read_text(encoding="utf-8")
+
+        with urllib.request.urlopen(launch.url, timeout=2) as response:
+            page = response.read().decode("utf-8")
+            assert '"id":"custom-setting"' in page
+            assert '"contextRefs":["custom-setting"]' in page
+            assert 'id="contextEditorModal"' in page
+            assert "No context definition exists yet" in page
+    finally:
+        viewer.stop()

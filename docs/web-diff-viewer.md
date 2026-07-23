@@ -77,12 +77,22 @@ The viewer provides:
 
 Select the `?` button in the toolbar to enable context-help mode. Recognized services, Helm
 commands, GitLab pipeline keywords, GitOps concepts, identity settings, and selected E-IDS
-terms then receive a subtle hover treatment. Hover or keyboard-focus a recognized line for a
-compact explanation. Select the line to open the full searchable dictionary entry.
+terms then receive a subtle hover treatment. The current file path is rendered as individual
+breadcrumbs, so an environment, directory, and file name can each have a separate explanation:
 
-The initial bundled catalog can be extended or overridden with a local
-`.config-review-context.yaml` file. Context is explanatory only: it does not hide changes or
-change the comparison result. Privacy mode turns context help off and disables the `?` button.
+```text
+alpha → test-ot / ms / config / values.yaml
+```
+
+Hover or keyboard-focus a recognized line or breadcrumb for a compact explanation. Select it to
+open the full searchable dictionary entry. Undocumented YAML keys and path segments use a dashed
+indicator; select one to open a prefilled definition editor. Existing entries can be edited from
+the dictionary details. Built-in entries are preserved and edited through a project-local
+override in `.config-review-context.yaml`.
+
+Context remains explanatory only: it does not hide changes or change the comparison result.
+Privacy mode turns context help off and disables the `?` button. Dry-run mode allows definitions
+to be viewed but not saved.
 
 See [Context Dictionary and Web Tooltips](context-helper.md) for the local schema and supported
 matching rules.

@@ -29,7 +29,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from .context_help import ContextCatalog, load_context_catalog
+from .context_help import (
+    ContextCatalog,
+    context_edit_path,
+    context_line_suggestion,
+    context_path_part_payload,
+    load_context_catalog,
+    upsert_context_entry,
+)
 from .core import (
     ChangeBlock,
     DEFAULT_EXCLUDED_DIRS,
@@ -72,6 +79,7 @@ class _ContextGapSnapshot:
     lines: tuple[str, ...]
     private_lines: tuple[str, ...] = ()
     context_refs: tuple[tuple[str, ...], ...] = ()
+    context_suggestions: tuple[dict[str, Any] | None, ...] = ()
 
 
 ContextLookup = dict[str, _ContextGapSnapshot]
@@ -448,6 +456,7 @@ def _display_lines_payload(
             "devLine": line.dev_line,
             "emphasisRanges": [list(item) for item in line.emphasis_ranges],
             "contextRefs": context_catalog.match_line(relative_path, line.text),
+            "contextSuggestion": context_line_suggestion(relative_path, line.text),
         }
         for line, private_text in zip(lines, private_lines, strict=True)
     ]
@@ -750,6 +759,9 @@ def _timeline_context_gaps(
                 context_refs=tuple(
                     tuple(context_catalog.match_line(record.relative_path, value))
                     for value in values
+                ),
+                context_suggestions=tuple(
+                    context_line_suggestion(record.relative_path, value) for value in values
                 ),
             ),
         )
@@ -1145,6 +1157,27 @@ def _build_web_diff_snapshot(
             ),
             "states": list(record.states),
             "contextRefs": context_catalog.match_path(record.relative_path),
+            "contextPath": {
+                "sourceEnvironment": context_path_part_payload(
+                    context_catalog,
+                    record.relative_path,
+                    workbench.settings.source.name,
+                ),
+                "targetEnvironment": context_path_part_payload(
+                    context_catalog,
+                    record.relative_path,
+                    workbench.settings.target.name,
+                ),
+                "parts": [
+                    context_path_part_payload(
+                        context_catalog,
+                        record.relative_path,
+                        part,
+                        is_filename=index == len(Path(record.relative_path).parts) - 1,
+                    )
+                    for index, part in enumerate(Path(record.relative_path).parts)
+                ],
+            },
             "focused": focused_payload,
             "focusedExpanded": focused_expanded_payload,
             "raw": _presentation_payload(
@@ -1213,7 +1246,11 @@ def _build_web_diff_snapshot(
             "commit": workbench.git_link_commit,
             "status": workbench.git_link_status_text,
         },
-        "contextCatalog": context_catalog.payload(),
+        "contextCatalog": {
+            **context_catalog.payload(),
+            "editable": not workbench.settings.dry_run,
+            "editFile": str(context_edit_path(workbench.settings.config_file)),
+        },
         "files": files,
     }
     return snapshot, git_lookup, context_lookup
@@ -1316,6 +1353,11 @@ def _context_gap_payload(
         if snapshot.context_refs
         else tuple(() for _item in selected)
     )
+    suggestion_selected = (
+        snapshot.context_suggestions[offset : offset + count]
+        if snapshot.context_suggestions
+        else tuple(None for _item in selected)
+    )
     return {
         "edge": edge,
         "count": count,
@@ -1330,6 +1372,11 @@ def _context_gap_payload(
                 "kind": "context",
                 "emphasisRanges": [],
                 "contextRefs": list(context_selected[index]),
+                **(
+                    {"contextSuggestion": suggestion_selected[index]}
+                    if suggestion_selected[index] is not None
+                    else {}
+                ),
             }
             for index, text in enumerate(selected)
         ],
@@ -1420,17 +1467,11 @@ def _environment_listing_payload(root_value: str) -> dict[str, Any]:
     truncated = False
     try:
         children = sorted(
-            (
-                item
-                for item in root.iterdir()
-                if item.is_dir() and not item.name.startswith(".")
-            ),
+            (item for item in root.iterdir() if item.is_dir() and not item.name.startswith(".")),
             key=lambda item: item.name.casefold(),
         )
     except OSError as exc:
-        raise WorkbenchError(
-            f"Could not inspect repository directory {root}: {exc}"
-        ) from exc
+        raise WorkbenchError(f"Could not inspect repository directory {root}: {exc}") from exc
 
     if len(children) > 250:
         children = children[:250]
@@ -1558,6 +1599,38 @@ def _replace_server_comparison(
         **_comparison_identity(replacement.settings.source, replacement.settings.target),
         "fileCount": len(snapshot["files"]),
         "persisted": persist,
+    }
+
+
+def _save_server_context_entry(
+    server: _ViewerServer,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one local definition and rebuild the active browser snapshot."""
+    if server.workbench.settings.dry_run:
+        raise WorkbenchError("Context definitions cannot be saved in dry-run mode.")
+    raw_entry = payload.get("entry")
+    if not isinstance(raw_entry, dict):
+        raise WorkbenchError("Context definition request must include an entry object.")
+    try:
+        entry, path = upsert_context_entry(
+            server.workbench.settings.config_file,
+            raw_entry,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise WorkbenchError(str(exc)) from exc
+
+    snapshot, git_lookup, context_lookup = _build_web_diff_snapshot(server.workbench)
+    page = _render_page(snapshot)
+    with server.state_lock:
+        server.page = page
+        server.git_lookup = git_lookup
+        server.context_lookup = context_lookup
+        server.git_cache = {}
+    return {
+        "ok": True,
+        "entryId": entry.id,
+        "path": str(path),
     }
 
 
@@ -1730,9 +1803,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   font: 600 14px ui-monospace, SFMono-Regular, Consolas, monospace;
   min-width: 240px;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-overflow: clip;
   white-space: nowrap;
+  scrollbar-width: thin;
 }
 .controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .controls button, .view-menu summary, .view-menu button {
@@ -1864,16 +1939,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-color: var(--accent) !important;
   color: #fff !important;
 }
-.context-available { position: relative; }
+.context-available, .context-missing { position: relative; }
 .context-help-mode .context-available { cursor: help; }
+.context-help-mode .context-missing { cursor: copy; }
 .context-help-mode .line .code.context-available:hover,
 .context-help-mode .line .code.context-available:focus-visible,
-.context-help-mode .path.context-available:hover,
-.context-help-mode .path.context-available:focus-visible {
+.context-help-mode .path-part.context-available:hover,
+.context-help-mode .path-part.context-available:focus-visible {
   outline: 1px dotted var(--accent);
-  outline-offset: -2px;
+  outline-offset: 1px;
   background: var(--accentbg);
 }
+.context-help-mode .line .code.context-missing:hover,
+.context-help-mode .line .code.context-missing:focus-visible,
+.context-help-mode .path-part.context-missing:hover,
+.context-help-mode .path-part.context-missing:focus-visible {
+  outline: 1px dashed var(--muted);
+  outline-offset: 1px;
+  background: var(--hover);
+}
+.path-breadcrumb { display: inline-flex; align-items: center; gap: 3px; min-width: 0; }
+.path-part { display: inline-block; border-radius: 3px; padding: 0 2px; }
+.path-arrow { color: var(--accent); padding: 0 3px; }
+.path-separator { color: var(--muted); }
+.path-state { color: var(--muted); margin-left: 7px; font: 600 11px/1.4 system-ui, sans-serif; }
 .context-tooltip[hidden] { display: none; }
 .context-tooltip {
   position: fixed;
@@ -1899,6 +1988,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .context-tooltip-category { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
 .context-tooltip-summary { margin-top: 4px; }
 .context-tooltip-hint { margin-top: 8px; color: var(--muted); font-size: 10px; }
+.context-tooltip-missing { color: var(--muted); }
 .intraline {
   font-weight: 800;
   border-radius: 2px;
@@ -2284,6 +2374,35 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .dictionary-detail-more { color: var(--muted); white-space: pre-wrap; }
 .dictionary-aliases { margin-top: 16px; color: var(--muted); font-size: 12px; }
 .dictionary-source { margin-top: 12px; color: var(--muted); font-size: 11px; }
+.dictionary-detail-actions { display: flex; gap: 7px; margin-top: 16px; }
+.dictionary-detail-actions button, .dictionary-toolbar button, .context-editor-actions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+}
+.dictionary-detail-actions button:hover, .dictionary-toolbar button:hover,
+.context-editor-actions button:hover { border-color: var(--muted); }
+.context-editor-dialog { width: min(720px, 100%); }
+.context-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.context-editor-field { display: grid; gap: 5px; }
+.context-editor-field.full { grid-column: 1 / -1; }
+.context-editor-field label { color: var(--muted); font-size: 12px; font-weight: 700; }
+.context-editor-field input, .context-editor-field select, .context-editor-field textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.context-editor-field textarea { min-height: 90px; resize: vertical; }
+.context-editor-help { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.context-editor-error { min-height: 20px; color: var(--del); white-space: pre-wrap; margin-top: 10px; }
+.context-editor-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+.context-editor-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .dictionary-empty { padding: 32px; text-align: center; color: var(--muted); }
 @media (max-width: 800px) {
   .app { grid-template-columns: 240px minmax(0, 1fr); }
@@ -2478,12 +2597,76 @@ button, input, select, textarea { font: inherit; color: inherit; }
     <div class="modal-body">
       <div class="dictionary-toolbar">
         <input id="contextSearch" type="search" placeholder="Search services, Helm, GitLab, GitOps, acronyms…" autocomplete="off">
+        <button id="newContextEntry" type="button">New definition</button>
         <span id="contextCount" class="dictionary-count"></span>
       </div>
       <div id="contextDiagnostics" class="dictionary-diagnostics"></div>
       <div class="dictionary-layout">
         <div id="contextList" class="dictionary-list"></div>
         <article id="contextDetails" class="dictionary-details"></article>
+      </div>
+    </div>
+  </section>
+</div>
+<div id="contextEditorModal" class="modal-backdrop" hidden>
+  <section class="modal-dialog context-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="contextEditorTitle">
+    <div class="modal-heading">
+      <h2 id="contextEditorTitle">Add context definition</h2>
+      <button id="closeContextEditor" class="modal-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="context-editor-grid">
+        <div class="context-editor-field">
+          <label for="contextEntryId">Definition ID</label>
+          <input id="contextEntryId" type="text" spellcheck="false">
+        </div>
+        <div class="context-editor-field">
+          <label for="contextEntryCategory">Category</label>
+          <input id="contextEntryCategory" type="text" value="Project Context">
+        </div>
+        <div class="context-editor-field full">
+          <label for="contextEntryTitle">Title</label>
+          <input id="contextEntryTitle" type="text">
+        </div>
+        <div class="context-editor-field full">
+          <label for="contextEntrySummary">Short definition</label>
+          <textarea id="contextEntrySummary"></textarea>
+        </div>
+        <div class="context-editor-field full">
+          <label for="contextEntryDetails">More details (optional)</label>
+          <textarea id="contextEntryDetails"></textarea>
+        </div>
+        <div class="context-editor-field full">
+          <label for="contextEntryAliases">Aliases (comma separated)</label>
+          <input id="contextEntryAliases" type="text">
+        </div>
+        <div class="context-editor-field">
+          <label for="contextMatchType">Match type</label>
+          <select id="contextMatchType">
+            <option value="path-segment">Path segment</option>
+            <option value="file-name">File name</option>
+            <option value="yaml-key">YAML key</option>
+            <option value="yaml-value">YAML value</option>
+            <option value="env-name">Environment variable name</option>
+            <option value="term">Term</option>
+            <option value="command">Command</option>
+            <option value="path">Path pattern</option>
+          </select>
+        </div>
+        <div class="context-editor-field">
+          <label for="contextMatchValue">Match value</label>
+          <input id="contextMatchValue" type="text" spellcheck="false">
+        </div>
+        <div class="context-editor-field full">
+          <label for="contextMatchFiles">Limit to files (comma separated, optional)</label>
+          <input id="contextMatchFiles" type="text" spellcheck="false" placeholder="Example: **/values.yaml, ms/config/*">
+          <div class="context-editor-help">Definitions are saved to <span id="contextEditFile"></span>. Editing a built-in entry creates a project-local override.</div>
+        </div>
+      </div>
+      <div id="contextEditorError" class="context-editor-error" role="alert"></div>
+      <div class="context-editor-actions">
+        <button id="cancelContextEditor" type="button">Cancel</button>
+        <button id="saveContextEntry" class="primary" type="button">Save definition</button>
       </div>
     </div>
   </section>
@@ -2510,9 +2693,12 @@ const reviewedFiles = new Set();
 const reviewedAtByFile = new Map();
 const contextEntries = snapshot.contextCatalog?.entries ?? [];
 const contextById = new Map(contextEntries.map(entry => [entry.id, entry]));
+const contextEditable = Boolean(snapshot.contextCatalog?.editable);
+const contextEditFilePath = snapshot.contextCatalog?.editFile ?? '.config-review-context.yaml';
 let selectedContextId = contextEntries[0]?.id ?? null;
 let contextTooltipTimer = null;
 let contextHelpMode = false;
+let editingContextEntry = null;
 let browseInput = null;
 let browseAfterSelect = null;
 let browsePath = '';
@@ -2729,6 +2915,16 @@ function renderContextDetails(entry) {
     ? 'Source: built-in Config Review context catalog'
     : `Source: ${entry.source}`;
   host.append(source);
+  if (contextEditable) {
+    const actions = document.createElement('div');
+    actions.className = 'dictionary-detail-actions';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = entry.source === 'built-in' ? 'Override definition' : 'Edit definition';
+    edit.onclick = () => openContextEditor({entry});
+    actions.append(edit);
+    host.append(actions);
+  }
 }
 
 function filteredContextEntries() {
@@ -2802,6 +2998,113 @@ function closeContextModal() {
   $('contextModal').hidden = true;
 }
 
+function contextSlug(value) {
+  const slug = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || `context-${Date.now()}`;
+}
+
+function openContextEditor({entry = null, suggestion = null} = {}) {
+  if (!contextEditable) {
+    setStatus('Context definitions cannot be edited in dry-run mode.', 'error');
+    return;
+  }
+  editingContextEntry = entry;
+  const match = suggestion ?? entry?.matches?.[0] ?? {
+    type: 'term',
+    value: '',
+    files: [],
+    title: '',
+  };
+  const titleValue = entry?.title ?? match.title ?? match.value ?? '';
+  $('contextEditorTitle').textContent = entry
+    ? (entry.source === 'built-in' ? 'Override context definition' : 'Edit context definition')
+    : 'Add context definition';
+  $('contextEntryId').value = entry?.id ?? contextSlug(match.value || titleValue);
+  $('contextEntryId').readOnly = Boolean(entry);
+  $('contextEntryCategory').value = entry?.category ?? 'Project Context';
+  $('contextEntryTitle').value = titleValue;
+  $('contextEntrySummary').value = entry?.summary ?? '';
+  $('contextEntryDetails').value = entry?.details ?? '';
+  $('contextEntryAliases').value = (entry?.aliases ?? []).join(', ');
+  $('contextMatchType').value = match.type ?? 'term';
+  $('contextMatchValue').value = match.value ?? '';
+  $('contextMatchFiles').value = (match.files ?? []).join(', ');
+  $('contextEditFile').textContent = contextEditFilePath;
+  $('contextEditorError').textContent = '';
+  $('contextModal').hidden = true;
+  $('contextEditorModal').hidden = false;
+  $('contextEntryTitle').focus();
+}
+
+function closeContextEditor() {
+  $('contextEditorModal').hidden = true;
+  editingContextEntry = null;
+}
+
+function contextEditorEntryPayload() {
+  const primaryRule = {
+    type: $('contextMatchType').value,
+    value: $('contextMatchValue').value.trim(),
+    files: $('contextMatchFiles').value
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean),
+  };
+  const preservedRules = editingContextEntry?.matches?.slice(1) ?? [];
+  return {
+    id: $('contextEntryId').value.trim(),
+    title: $('contextEntryTitle').value.trim(),
+    category: $('contextEntryCategory').value.trim(),
+    summary: $('contextEntrySummary').value.trim(),
+    details: $('contextEntryDetails').value.trim(),
+    aliases: $('contextEntryAliases').value
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean),
+    matches: [primaryRule, ...preservedRules],
+  };
+}
+
+async function saveContextEntry() {
+  const entry = contextEditorEntryPayload();
+  if (!entry.id || !entry.title || !entry.category || !entry.summary) {
+    $('contextEditorError').textContent = 'ID, title, category, and short definition are required.';
+    return;
+  }
+  if (!entry.matches[0].value) {
+    $('contextEditorError').textContent = 'A match value is required.';
+    return;
+  }
+  if (notesDirty && !window.confirm('Saving this definition reloads the comparison and clears unsaved browser notes. Continue?')) {
+    return;
+  }
+  const button = $('saveContextEntry');
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  $('contextEditorError').textContent = '';
+  try {
+    const response = await fetch('context-entry', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+      body: JSON.stringify({entry}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Definition request failed (${response.status})`);
+    notesDirty = false;
+    window.location.reload();
+  } catch (error) {
+    $('contextEditorError').textContent = error.message;
+    button.disabled = false;
+    button.textContent = 'Save definition';
+  }
+}
+
 function hideContextTooltip() {
   if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
   contextTooltipTimer = null;
@@ -2853,28 +3156,50 @@ function showContextTooltip(anchor, ids) {
   positionContextTooltip(anchor);
 }
 
+function showMissingContextTooltip(anchor, suggestion) {
+  if (privacyMode || !contextEditable || !suggestion) return;
+  if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
+  const tooltip = $('contextTooltip');
+  tooltip.replaceChildren();
+  const title = document.createElement('div');
+  title.className = 'context-tooltip-title';
+  title.textContent = suggestion.title || suggestion.value || 'Undocumented item';
+  const summary = document.createElement('div');
+  summary.className = 'context-tooltip-summary context-tooltip-missing';
+  summary.textContent = 'No context definition exists yet.';
+  const hint = document.createElement('div');
+  hint.className = 'context-tooltip-hint';
+  hint.textContent = 'Click to add a project definition.';
+  tooltip.append(title, summary, hint);
+  tooltip.hidden = false;
+  positionContextTooltip(anchor);
+}
+
 function contextIds(ids = []) {
   return ids.filter(id => contextById.has(id));
 }
 
-function decorateContextTarget(element, ids) {
+function decorateContextTarget(element, ids, suggestion = null) {
   const available = contextIds(ids);
-  if (!available.length) return;
-  element.classList.add('context-available');
+  const canAdd = !available.length && contextEditable && Boolean(suggestion);
+  if (!available.length && !canAdd) return;
+  element.classList.add(available.length ? 'context-available' : 'context-missing');
   element.tabIndex = contextHelpMode ? 0 : -1;
-  element.addEventListener('mouseenter', () => {
-    if (contextHelpMode) showContextTooltip(element, available);
-  });
+  const show = () => {
+    if (!contextHelpMode) return;
+    if (available.length) showContextTooltip(element, available);
+    else showMissingContextTooltip(element, suggestion);
+  };
+  element.addEventListener('mouseenter', show);
   element.addEventListener('mouseleave', scheduleContextTooltipHide);
-  element.addEventListener('focus', () => {
-    if (contextHelpMode) showContextTooltip(element, available);
-  });
+  element.addEventListener('focus', show);
   element.addEventListener('blur', scheduleContextTooltipHide);
   element.addEventListener('click', event => {
     if (!contextHelpMode) return;
     event.stopPropagation();
     hideContextTooltip();
-    openContextModal(available[0]);
+    if (available.length) openContextModal(available[0]);
+    else openContextEditor({suggestion});
   });
 }
 
@@ -2891,7 +3216,7 @@ function applyContextHelpMode() {
       ? 'Turn context help off'
       : 'Turn context help on';
   button.disabled = privacyMode;
-  document.querySelectorAll('.context-available').forEach(element => {
+  document.querySelectorAll('.context-available, .context-missing').forEach(element => {
     element.tabIndex = enabled ? 0 : -1;
   });
   if (!enabled) hideContextTooltip();
@@ -3169,7 +3494,7 @@ function lineElement(line) {
     displayLineText(line),
     privacyMode ? [] : (line.emphasisRanges ?? []),
   );
-  if (!privacyMode) decorateContextTarget(code, line.contextRefs ?? []);
+  if (!privacyMode) decorateContextTarget(code, line.contextRefs ?? [], line.contextSuggestion ?? null);
   row.append(tl, dl, prefix, code);
   return row;
 }
@@ -3746,6 +4071,50 @@ function appendFocusedLines(host, view) {
 }
 
 
+function pathPartElement(part) {
+  const element = document.createElement('span');
+  element.className = 'path-part';
+  element.textContent = part?.text ?? '';
+  if (!privacyMode) {
+    decorateContextTarget(
+      element,
+      part?.contextRefs ?? [],
+      part?.contextSuggestion ?? null,
+    );
+  }
+  return element;
+}
+
+function renderFilePathBreadcrumb(host, file, stateSuffix) {
+  host.replaceChildren();
+  if (privacyMode || !file.contextPath) {
+    host.textContent = stateSuffix
+      ? `${displayFilePath(file)} · ${stateSuffix}`
+      : displayFilePath(file);
+    return;
+  }
+  const breadcrumb = document.createElement('span');
+  breadcrumb.className = 'path-breadcrumb';
+  breadcrumb.append(pathPartElement(file.contextPath.sourceEnvironment));
+  const arrow = document.createElement('span');
+  arrow.className = 'path-arrow';
+  arrow.textContent = '→';
+  breadcrumb.append(arrow, pathPartElement(file.contextPath.targetEnvironment));
+  for (const part of file.contextPath.parts ?? []) {
+    const separator = document.createElement('span');
+    separator.className = 'path-separator';
+    separator.textContent = '/';
+    breadcrumb.append(separator, pathPartElement(part));
+  }
+  host.append(breadcrumb);
+  if (stateSuffix) {
+    const state = document.createElement('span');
+    state.className = 'path-state';
+    state.textContent = `· ${stateSuffix}`;
+    host.append(state);
+  }
+}
+
 function renderDiff() {
   const file = currentFile();
   if (!file) {
@@ -3759,14 +4128,9 @@ function renderDiff() {
   const view = mode === 'focused' ? (file.focusedExpanded ?? file.focused) : file.raw;
   const summaryView = mode === 'focused' ? file.focused : file.raw;
   const stateSuffix = [reviewedFiles.has(file.path) ? 'REVIEWED' : '', hiddenFiles.has(file.path) ? 'HIDDEN' : ''].filter(Boolean).join(' · ');
-  const shownPath = displayFilePath(file);
   const pathHost = $('path');
-  pathHost.classList.remove('context-available');
-  pathHost.removeAttribute('tabindex');
   pathHost.replaceWith(pathHost.cloneNode(false));
-  const currentPathHost = $('path');
-  currentPathHost.textContent = stateSuffix ? `${shownPath} · ${stateSuffix}` : shownPath;
-  if (!privacyMode) decorateContextTarget(currentPathHost, file.contextRefs ?? []);
+  renderFilePathBreadcrumb($('path'), file, stateSuffix);
   $('focused').classList.toggle('active', mode === 'focused');
   $('raw').classList.toggle('active', mode === 'raw');
   const hidden = summaryView.noiseHidden + summaryView.whitespaceHidden + summaryView.orderHidden;
@@ -4199,6 +4563,7 @@ function applyPrivacyMode() {
   if (privacyMode) {
     contextHelpMode = false;
     closeContextModal();
+    closeContextEditor();
   }
   button.classList.toggle('active', privacyMode);
   button.setAttribute('aria-pressed', privacyMode ? 'true' : 'false');
@@ -4227,9 +4592,17 @@ $('raw').onclick = () => { mode = 'raw'; renderDiff(); };
 $('changeComparison').onclick = openComparisonModal;
 $('contextHelp').onclick = toggleContextHelpMode;
 $('closeContext').onclick = closeContextModal;
+$('newContextEntry').onclick = () => openContextEditor();
+$('newContextEntry').disabled = !contextEditable;
+$('closeContextEditor').onclick = closeContextEditor;
+$('cancelContextEditor').onclick = closeContextEditor;
+$('saveContextEntry').onclick = saveContextEntry;
 $('contextSearch').addEventListener('input', renderContextDictionary);
 $('contextModal').addEventListener('click', event => {
   if (event.target === $('contextModal')) closeContextModal();
+});
+$('contextEditorModal').addEventListener('click', event => {
+  if (event.target === $('contextEditorModal')) closeContextEditor();
 });
 $('contextTooltip').addEventListener('mouseenter', () => {
   if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
@@ -4312,6 +4685,16 @@ document.querySelectorAll('[data-theme-choice]').forEach(button => {
   };
 });
 document.addEventListener('keydown', event => {
+  if (!$('contextEditorModal').hidden) {
+    if (event.key === 'Escape') {
+      closeContextEditor();
+      event.preventDefault();
+    } else if (event.key === 'Enter' && event.ctrlKey) {
+      saveContextEntry();
+      event.preventDefault();
+    }
+    return;
+  }
   if (!$('contextModal').hidden) {
     if (event.key === 'Escape') {
       closeContextModal();
@@ -4495,7 +4878,8 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         comparison_path = f"/{self.server.token}/comparison"
         preview_path = f"/{self.server.token}/comparison-preview"
-        if parsed.path not in {comparison_path, preview_path}:
+        context_entry_path = f"/{self.server.token}/context-entry"
+        if parsed.path not in {comparison_path, preview_path, context_entry_path}:
             self.send_error(405)
             return
 
@@ -4504,8 +4888,8 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "Invalid request length."})
             return
-        if length <= 0 or length > 65_536:
-            self._send_json(400, {"error": "Invalid comparison request."})
+        if length <= 0 or length > 131_072:
+            self._send_json(400, {"error": "Invalid request."})
             return
         try:
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -4513,8 +4897,17 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "Comparison request must be valid JSON."})
             return
         if not isinstance(payload, dict):
-            self._send_json(400, {"error": "Comparison request must be a JSON object."})
+            self._send_json(400, {"error": "Request must be a JSON object."})
             return
+        if parsed.path == context_entry_path:
+            try:
+                result = _save_server_context_entry(self.server, payload)
+            except (OSError, WorkbenchError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, result)
+            return
+
         source = payload.get("source")
         target = payload.get("target")
         if not isinstance(source, str) or not isinstance(target, str):
