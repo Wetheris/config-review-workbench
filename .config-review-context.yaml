@@ -9,3 +9,16 @@ entries:
         value: interval
         files:
           - ms/keycloak-helm-repo.yaml
+  - id: spec
+    title: spec
+    category: Project Context
+    summary: Defines the desired configuration and behavior of this Kubernetes or OpenShift resource
+    details: The spec section describes what the resource should look like or do. Its available 
+      fields depend on the resource kind. For example, a HelmRepository spec defines the repository 
+      URL, polling interval, provider settings, and authentication references.
+    aliases:
+      - resource spec
+    matches:
+      - type: yaml-key
+        value: spec
+        files: []

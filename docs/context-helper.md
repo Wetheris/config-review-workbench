@@ -33,6 +33,14 @@ project-specific replacement is written to:
 .config-review-context.yaml
 ```
 
+The category field uses the existing dictionary categories as a dropdown and defaults to
+**Project Context**. Select **Create new category…** when a new grouping is needed.
+
+Definitions are global by default. Enable **Limit this definition to specific files or paths**
+only when a generic key or value needs additional scope. The current comparison file is offered
+as the default scope, and **Browse changed files…** can select another repository-relative file.
+The field also accepts broader glob patterns such as `**/values.yaml` or `ms/config/**`.
+
 The editor supports definitions for path segments, file names, exact YAML paths, YAML keys and
 values, environment variable names, commands, terms, and path patterns. Saving reloads the current browser snapshot
 so the new matching rule is immediately applied. Unsaved reviewer notes are protected by a
@@ -50,6 +58,9 @@ supports full-text search across:
 - Categories
 - Summaries and longer details
 - Aliases
+
+The entry list and detail pane scroll independently. Selecting an entry shows its full
+properties, matching rules, source, and edit or override action on the right.
 
 The dictionary explains configuration; it does not decide whether a change is safe or
 automatically hide a difference.

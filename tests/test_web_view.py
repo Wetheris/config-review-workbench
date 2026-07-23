@@ -433,6 +433,16 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "context-help-mode" in page
     assert "contextTooltip" in page
     assert "contextSearch" in page
+    assert 'id="contextEntryCategory"' in page
+    assert "+ Create new category…" in page
+    assert 'id="contextLimitFiles"' in page
+    assert "Limit this definition to specific files or paths" in page
+    assert "Browse changed files…" in page
+    assert 'id="contextFilePickerModal"' in page
+    assert "dictionary-match" in page
+    assert "scrollbar-gutter: stable" in page
+    assert "renderContextFilePicker" in page
+    assert "updateContextFileScope" in page
     assert "decorateContextTarget" in page
     assert "toggleContextHelpMode" in page
     assert "showContextTooltip" in page

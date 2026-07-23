@@ -2364,6 +2364,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .folder-empty { padding: 20px; text-align: center; color: var(--muted); }
 .folder-truncated { padding: 6px 9px; color: var(--muted); font-size: 11px; }
 .dictionary-dialog { width: min(1040px, 100%); }
+.dictionary-dialog .modal-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .dictionary-toolbar {
   display: flex;
   gap: 8px;
@@ -2391,15 +2397,27 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .dictionary-diagnostics:empty { display: none; }
 .dictionary-layout {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(260px, .85fr) minmax(360px, 1.4fr);
-  min-height: 430px;
-  max-height: min(620px, calc(100vh - 210px));
+  min-height: 0;
+  height: min(620px, calc(100vh - 210px));
+  height: min(620px, calc(100dvh - 210px));
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
 }
-.dictionary-list { min-height: 0; overflow: auto; padding: 7px; border-right: 1px solid var(--border); }
+.dictionary-list {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 7px;
+  border-right: 1px solid var(--border);
+}
 .dictionary-category {
   padding: 8px 7px 4px;
   color: var(--muted);
@@ -2431,12 +2449,30 @@ button, input, select, textarea { font: inherit; color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dictionary-details { min-height: 0; overflow: auto; padding: 18px; }
+.dictionary-details {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 18px;
+}
 .dictionary-details h3 { margin: 0 0 4px; font-size: 20px; }
 .dictionary-detail-category { color: var(--accent); font-weight: 700; }
 .dictionary-detail-summary { margin: 14px 0; font-size: 14px; }
 .dictionary-detail-more { color: var(--muted); white-space: pre-wrap; }
 .dictionary-aliases { margin-top: 16px; color: var(--muted); font-size: 12px; }
+.dictionary-matches { margin-top: 16px; }
+.dictionary-matches h4 { margin: 0 0 6px; font-size: 12px; }
+.dictionary-match {
+  margin-top: 5px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
 .dictionary-source { margin-top: 12px; color: var(--muted); font-size: 11px; }
 .dictionary-detail-actions { display: flex; gap: 7px; margin-top: 16px; }
 .dictionary-detail-actions button, .dictionary-toolbar button, .context-editor-actions button {
@@ -2462,6 +2498,58 @@ button, input, select, textarea { font: inherit; color: inherit; }
   background: var(--bg);
   color: var(--text);
 }
+.context-category-row,
+.context-scope-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+.context-category-row input[hidden],
+.context-scope-row[hidden] { display: none; }
+.context-scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.context-scope-option input { width: auto; }
+.context-scope-row button,
+.context-category-row button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+}
+.context-scope-row button:hover,
+.context-category-row button:hover { border-color: var(--muted); }
+.context-file-picker-dialog { width: min(680px, 100%); }
+.context-file-picker-list {
+  max-height: min(520px, calc(100vh - 220px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px;
+}
+.context-file-picker-item {
+  display: block;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+}
+.context-file-picker-item:hover,
+.context-file-picker-item:focus-visible { background: var(--accentbg); color: var(--accent); outline: none; }
 .context-editor-field textarea { min-height: 90px; resize: vertical; }
 .context-editor-help { color: var(--muted); font-size: 11px; margin-top: 4px; }
 .context-editor-error { min-height: 20px; color: var(--del); white-space: pre-wrap; margin-top: 10px; }
@@ -2479,7 +2567,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .path-entry { grid-template-columns: 1fr; }
   .environment-entry { grid-template-columns: 1fr; }
   .comparison-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .dictionary-layout { grid-template-columns: 1fr; max-height: calc(100vh - 185px); }
+  .dictionary-layout {
+    grid-template-columns: 1fr;
+    height: calc(100vh - 185px);
+    height: calc(100dvh - 185px);
+  }
   .dictionary-list { max-height: 250px; border-right: 0; border-bottom: 1px solid var(--border); }
 }
 @media print {
@@ -2686,7 +2778,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
         </div>
         <div class="context-editor-field">
           <label for="contextEntryCategory">Category</label>
-          <input id="contextEntryCategory" type="text" value="Project Context">
+          <select id="contextEntryCategory"></select>
+          <input id="contextEntryNewCategory" type="text" placeholder="New category name" hidden>
         </div>
         <div class="context-editor-field full">
           <label for="contextEntryTitle">Title</label>
@@ -2723,8 +2816,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
           <input id="contextMatchValue" type="text" spellcheck="false">
         </div>
         <div class="context-editor-field full">
-          <label for="contextMatchFiles">Limit to files (comma separated, optional)</label>
-          <input id="contextMatchFiles" type="text" spellcheck="false" placeholder="Example: **/values.yaml, ms/config/*">
+          <label class="context-scope-option" for="contextLimitFiles">
+            <input id="contextLimitFiles" type="checkbox">
+            Limit this definition to specific files or paths
+          </label>
+          <div id="contextScopeRow" class="context-scope-row" hidden>
+            <input id="contextMatchFiles" type="text" spellcheck="false" placeholder="Example: **/values.yaml, ms/config/*" disabled>
+            <button id="browseContextFiles" type="button" disabled>Browse changed files…</button>
+          </div>
           <div id="contextMatchContext" class="context-editor-help"></div>
           <div class="context-editor-help">Definitions are saved to <span id="contextEditFile"></span>. Editing a built-in entry creates a project-local override.</div>
         </div>
@@ -2734,6 +2833,21 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <button id="cancelContextEditor" type="button">Cancel</button>
         <button id="saveContextEntry" class="primary" type="button">Save definition</button>
       </div>
+    </div>
+  </section>
+</div>
+<div id="contextFilePickerModal" class="modal-backdrop" hidden>
+  <section class="modal-dialog context-file-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="contextFilePickerTitle">
+    <div class="modal-heading">
+      <h2 id="contextFilePickerTitle">Choose a comparison file</h2>
+      <button id="closeContextFilePicker" class="modal-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="dictionary-toolbar">
+        <input id="contextFileSearch" type="search" placeholder="Filter changed files…" autocomplete="off">
+        <span id="contextFileCount" class="dictionary-count"></span>
+      </div>
+      <div id="contextFilePickerList" class="context-file-picker-list"></div>
     </div>
   </section>
 </div>
@@ -2759,6 +2873,14 @@ const reviewedFiles = new Set();
 const reviewedAtByFile = new Map();
 const contextEntries = snapshot.contextCatalog?.entries ?? [];
 const contextById = new Map(contextEntries.map(entry => [entry.id, entry]));
+const contextCategories = [...new Set([
+  'Project Context',
+  ...contextEntries.map(entry => entry.category).filter(Boolean),
+])].sort((left, right) => {
+  if (left === 'Project Context') return -1;
+  if (right === 'Project Context') return 1;
+  return left.localeCompare(right);
+});
 const contextEditable = Boolean(snapshot.contextCatalog?.editable);
 const contextEditFilePath = snapshot.contextCatalog?.editFile ?? '.config-review-context.yaml';
 let selectedContextId = contextEntries[0]?.id ?? null;
@@ -2939,9 +3061,13 @@ function contextMatches(ids = []) {
 }
 
 function selectContextEntry(entryId) {
-  if (!contextById.has(entryId)) return;
+  const entry = contextById.get(entryId);
+  if (!entry) return;
   selectedContextId = entryId;
-  renderContextDictionary();
+  $('contextList').querySelectorAll('.dictionary-item').forEach(button => {
+    button.classList.toggle('active', button.dataset.entryId === entryId);
+  });
+  renderContextDetails(entry);
 }
 
 function renderContextDetails(entry) {
@@ -2974,6 +3100,21 @@ function renderContextDetails(entry) {
     aliases.className = 'dictionary-aliases';
     aliases.textContent = `Also recognized as: ${entry.aliases.join(', ')}`;
     host.append(aliases);
+  }
+  if (entry.matches?.length) {
+    const matches = document.createElement('section');
+    matches.className = 'dictionary-matches';
+    const heading = document.createElement('h4');
+    heading.textContent = 'Matching rules';
+    matches.append(heading);
+    for (const rule of entry.matches) {
+      const row = document.createElement('div');
+      row.className = 'dictionary-match';
+      const fileScope = rule.files?.length ? ` · files: ${rule.files.join(', ')}` : '';
+      row.textContent = `${rule.type}: ${rule.value}${fileScope}`;
+      matches.append(row);
+    }
+    host.append(matches);
   }
   const source = document.createElement('div');
   source.className = 'dictionary-source';
@@ -3029,6 +3170,7 @@ function renderContextDictionary() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'dictionary-item' + (entry.id === selectedContextId ? ' active' : '');
+    button.dataset.entryId = entry.id;
     button.onclick = () => selectContextEntry(entry.id);
     const title = document.createElement('span');
     title.className = 'dictionary-item-title';
@@ -3045,7 +3187,8 @@ function renderContextDictionary() {
     empty.textContent = 'No dictionary entries match this search.';
     host.append(empty);
   }
-  renderContextDetails(contextById.get(selectedContextId));
+  const selectedEntry = entries.find(entry => entry.id === selectedContextId) ?? null;
+  renderContextDetails(selectedEntry);
 }
 
 function openContextModal(entryId = null) {
@@ -3073,6 +3216,92 @@ function contextSlug(value) {
   return slug || `context-${Date.now()}`;
 }
 
+function populateContextCategories(selectedCategory = 'Project Context') {
+  const select = $('contextEntryCategory');
+  select.replaceChildren();
+  const categories = contextCategories.includes(selectedCategory)
+    ? contextCategories
+    : [...contextCategories, selectedCategory].filter(Boolean);
+  for (const category of categories) {
+    const option = document.createElement('option');
+    option.value = category;
+    option.textContent = category;
+    select.append(option);
+  }
+  const createOption = document.createElement('option');
+  createOption.value = '__new__';
+  createOption.textContent = '+ Create new category…';
+  select.append(createOption);
+  select.value = categories.includes(selectedCategory) ? selectedCategory : 'Project Context';
+  $('contextEntryNewCategory').hidden = true;
+  $('contextEntryNewCategory').value = '';
+}
+
+function updateContextCategoryEditor() {
+  const creating = $('contextEntryCategory').value === '__new__';
+  $('contextEntryNewCategory').hidden = !creating;
+  if (creating) $('contextEntryNewCategory').focus();
+}
+
+function currentContextFilePath(match = null) {
+  return match?.file || currentFile()?.path || '';
+}
+
+function updateContextFileScope({autofill = true} = {}) {
+  const enabled = $('contextLimitFiles').checked;
+  $('contextScopeRow').hidden = !enabled;
+  $('contextMatchFiles').disabled = !enabled;
+  $('browseContextFiles').disabled = !enabled;
+  if (enabled && autofill && !$('contextMatchFiles').value.trim()) {
+    $('contextMatchFiles').value = $('contextMatchFiles').dataset.suggestedFile
+      || currentFile()?.path
+      || '';
+  }
+}
+
+function filteredContextFiles() {
+  const query = $('contextFileSearch').value.trim().toLowerCase();
+  return snapshot.files.filter(file => !query || file.path.toLowerCase().includes(query));
+}
+
+function chooseContextFile(path) {
+  $('contextMatchFiles').value = path;
+  closeContextFilePicker();
+}
+
+function renderContextFilePicker() {
+  const files = filteredContextFiles();
+  $('contextFileCount').textContent = `${files.length} of ${snapshot.files.length}`;
+  const host = $('contextFilePickerList');
+  host.replaceChildren();
+  for (const file of files) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'context-file-picker-item';
+    button.textContent = file.path;
+    button.onclick = () => chooseContextFile(file.path);
+    host.append(button);
+  }
+  if (!files.length) {
+    const empty = document.createElement('div');
+    empty.className = 'dictionary-empty';
+    empty.textContent = 'No changed files match this search.';
+    host.append(empty);
+  }
+}
+
+function openContextFilePicker() {
+  if (!$('contextLimitFiles').checked) return;
+  $('contextFileSearch').value = '';
+  renderContextFilePicker();
+  $('contextFilePickerModal').hidden = false;
+  $('contextFileSearch').focus();
+}
+
+function closeContextFilePicker() {
+  $('contextFilePickerModal').hidden = true;
+}
+
 function openContextEditor({entry = null, suggestion = null} = {}) {
   if (!contextEditable) {
     setStatus('Context definitions cannot be edited in dry-run mode.', 'error');
@@ -3091,14 +3320,20 @@ function openContextEditor({entry = null, suggestion = null} = {}) {
     : 'Add context definition';
   $('contextEntryId').value = entry?.id ?? contextSlug(match.value || titleValue);
   $('contextEntryId').readOnly = Boolean(entry);
-  $('contextEntryCategory').value = entry?.category ?? 'Project Context';
+  populateContextCategories(entry?.category ?? 'Project Context');
   $('contextEntryTitle').value = titleValue;
   $('contextEntrySummary').value = entry?.summary ?? '';
   $('contextEntryDetails').value = entry?.details ?? '';
   $('contextEntryAliases').value = (entry?.aliases ?? []).join(', ');
   $('contextMatchType').value = match.type ?? 'term';
   $('contextMatchValue').value = match.value ?? '';
-  $('contextMatchFiles').value = (match.files ?? []).join(', ');
+  const scopedFiles = entry ? (match.files ?? []) : [];
+  $('contextLimitFiles').checked = scopedFiles.length > 0;
+  $('contextMatchFiles').value = scopedFiles.join(', ');
+  $('contextMatchFiles').dataset.suggestedFile = currentContextFilePath(match)
+    || match.files?.[0]
+    || '';
+  updateContextFileScope({autofill: false});
   const matchContext = [
     match.clickedType ? `Type: ${match.clickedType}` : '',
     match.clickedValue ? `Value: ${match.clickedValue}` : '',
@@ -3115,23 +3350,30 @@ function openContextEditor({entry = null, suggestion = null} = {}) {
 
 function closeContextEditor() {
   $('contextEditorModal').hidden = true;
+  closeContextFilePicker();
   editingContextEntry = null;
 }
 
 function contextEditorEntryPayload() {
+  const category = $('contextEntryCategory').value === '__new__'
+    ? $('contextEntryNewCategory').value.trim()
+    : $('contextEntryCategory').value.trim();
+  const files = $('contextLimitFiles').checked
+    ? $('contextMatchFiles').value
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean)
+    : [];
   const primaryRule = {
     type: $('contextMatchType').value,
     value: $('contextMatchValue').value.trim(),
-    files: $('contextMatchFiles').value
-      .split(',')
-      .map(value => value.trim())
-      .filter(Boolean),
+    files,
   };
   const preservedRules = editingContextEntry?.matches?.slice(1) ?? [];
   return {
     id: $('contextEntryId').value.trim(),
     title: $('contextEntryTitle').value.trim(),
-    category: $('contextEntryCategory').value.trim(),
+    category,
     summary: $('contextEntrySummary').value.trim(),
     details: $('contextEntryDetails').value.trim(),
     aliases: $('contextEntryAliases').value
@@ -4718,6 +4960,14 @@ $('newContextEntry').disabled = !contextEditable;
 $('closeContextEditor').onclick = closeContextEditor;
 $('cancelContextEditor').onclick = closeContextEditor;
 $('saveContextEntry').onclick = saveContextEntry;
+$('contextEntryCategory').addEventListener('change', updateContextCategoryEditor);
+$('contextLimitFiles').addEventListener('change', () => updateContextFileScope());
+$('browseContextFiles').onclick = openContextFilePicker;
+$('closeContextFilePicker').onclick = closeContextFilePicker;
+$('contextFileSearch').addEventListener('input', renderContextFilePicker);
+$('contextFilePickerModal').addEventListener('click', event => {
+  if (event.target === $('contextFilePickerModal')) closeContextFilePicker();
+});
 $('contextSearch').addEventListener('input', renderContextDictionary);
 $('contextModal').addEventListener('click', event => {
   if (event.target === $('contextModal')) closeContextModal();
@@ -4806,6 +5056,13 @@ document.querySelectorAll('[data-theme-choice]').forEach(button => {
   };
 });
 document.addEventListener('keydown', event => {
+  if (!$('contextFilePickerModal').hidden) {
+    if (event.key === 'Escape') {
+      closeContextFilePicker();
+      event.preventDefault();
+    }
+    return;
+  }
   if (!$('contextEditorModal').hidden) {
     if (event.key === 'Escape') {
       closeContextEditor();
