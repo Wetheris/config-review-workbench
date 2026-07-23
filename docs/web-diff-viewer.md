@@ -8,7 +8,7 @@ those paths as the project default. Its hide/review/note state is temporary brow
 
 ## Opening it
 
-Press `w` from the main file list. The workbench rescans DEV and TEST, builds a snapshot,
+Press `w` from the main file list. The workbench rescans the active source and target, builds a snapshot,
 starts a temporary local server, and asks the operating system to open the URL in the
 default browser.
 
@@ -24,10 +24,17 @@ replaces it with a newly generated snapshot.
 
 ## Changing the comparison in the browser
 
-Select **Change comparison…** in the top toolbar to choose a different incoming/source
-directory and current/target directory without restarting the workbench. Paths can be typed or
-selected with the local folder browser. Relative paths are resolved from the directory where
-the workbench process was launched.
+Select the active comparison button in the top toolbar, such as **alpha → test-ot**, to choose
+different repositories, environments, or exact directories without restarting the workbench.
+Each side has its own repository or parent directory and an environment dropdown populated from
+direct child folders containing YAML. The exact-directory fields and local folder browser remain
+available for custom or nested layouts. Relative paths are resolved from the directory where the
+workbench process was launched.
+
+Use **Preview files** before switching to see the number of matched, modified, identical,
+source-only, and target-only YAML files. Environment names are derived from the selected directory
+names, so labels such as `alpha`, `test-ot`, `stage`, and `prod` replace the older fixed DEV/TEST
+labels throughout the web diff, Git context, copied output, and reports.
 
 The optional **Save these paths as the project default** checkbox writes the verified paths to
 the active `.config-review.yaml`. It is unchecked by default and unavailable in dry-run mode.
@@ -45,14 +52,15 @@ snapshot active.
 
 The viewer provides:
 
-- A searchable directory tree containing only files with current DEV/TEST differences
+- A searchable directory tree containing only files with current source/target differences
 - Previous and next changed-file navigation
-- A **Change comparison…** dialog for selecting new source and target directories
+- A comparison picker for selecting separate repository roots, environments, or exact directories
+- A read-only file preview before changing the active comparison
 - Optional `?` context-help mode with hover tooltips on recognized YAML elements
 - **Focused**, which mirrors the workbench's current noise and display filters
 - **Raw**, which shows the complete literal text comparison
-- TEST and DEV line-number gutters
-- Clickable TEST and DEV remote line links when repository metadata is available
+- Dynamic target and source line-number gutters using the selected environment names
+- Clickable target and source remote line links when repository metadata is available
 - Expandable hidden sections in Focused mode
 - System, dark, and light themes under **View**
 - A session-only **Hide sensitive values** privacy toggle under **View**
@@ -61,8 +69,8 @@ The viewer provides:
 - Exact changed-text emphasis inside paired red/green lines
 - Temporary hidden and reviewed file lists under **Review**
 - A **Save review…** action that exports the current view as plaintext
-- A **Copy displayed diff** action in both normal and privacy modes, including both TEST and
-  DEV line-number columns
+- A **Copy displayed diff** action in both normal and privacy modes, including both dynamic
+  target and source line-number columns
 - Reviewed-files save and print actions
 
 ## Context dictionary

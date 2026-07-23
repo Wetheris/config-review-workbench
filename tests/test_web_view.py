@@ -76,11 +76,17 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
     assert change["privateOldLines"] == ["value: test"]
     assert change["privateNewLines"] == ["value: dev"]
     assert file_data["privatePath"] == "changed.yaml"
-    assert snapshot["privateSource"] == "[DEV ROOT]"
-    assert snapshot["privateTarget"] == "[TEST ROOT]"
+    assert snapshot["privateSource"] == "[SOURCE ROOT]"
+    assert snapshot["privateTarget"] == "[TARGET ROOT]"
     assert snapshot["comparison"] == {
         "source": str(source),
         "target": str(target),
+        "sourceLabel": "dev",
+        "targetLabel": "test",
+        "sourceColumnLabel": "DEV",
+        "targetColumnLabel": "TEST",
+        "sourceRepository": "project",
+        "targetRepository": "project",
         "launchDirectory": str(Path.cwd().resolve()),
         "configFile": str(root / ".config-review.yaml"),
         "canPersist": True,
@@ -130,6 +136,38 @@ def test_focused_snapshot_exposes_note_targets_for_hidden_differences(tmp_path: 
         assert private_headers
         assert all("test → dev" not in value for value in private_headers)
         assert all("[REDACTED]" in value for value in private_headers)
+
+
+def test_web_snapshot_uses_selected_directory_names_instead_of_fixed_dev_test_labels(
+    tmp_path: Path,
+):
+    source = tmp_path / "flux-configuration" / "alpha"
+    target = tmp_path / "deployment-configurations" / "alpha"
+    source.mkdir(parents=True)
+    target.mkdir(parents=True)
+    (source / "values.yaml").write_text("value: incoming\n", encoding="utf-8")
+    (target / "values.yaml").write_text("value: current\n", encoding="utf-8")
+    settings = AppSettings(
+        source=source,
+        target=target,
+        config_file=tmp_path / ".config-review.yaml",
+        context=3,
+        include_secrets=False,
+        edit_command="",
+        vimdiff_command="",
+        dry_run=False,
+    )
+
+    snapshot = build_web_diff_snapshot(Workbench(settings))
+
+    comparison = snapshot["comparison"]
+    assert comparison["sourceLabel"] == "flux-configuration/alpha"
+    assert comparison["targetLabel"] == "deployment-configurations/alpha"
+    assert comparison["sourceColumnLabel"] == "FLUX-CONFIGURATION/ALPHA"
+    assert comparison["targetColumnLabel"] == "DEPLOYMENT-CONFIGURATIONS/ALPHA"
+    rendered_text = "\n".join(line["text"] for line in snapshot["files"][0]["raw"]["lines"])
+    assert "--- DEPLOYMENT-CONFIGURATIONS/ALPHA/values.yaml" in rendered_text
+    assert "+++ FLUX-CONFIGURATION/ALPHA/values.yaml" in rendered_text
 
 
 def test_context_gap_payload_expands_from_either_edge_and_stops_at_bounds():
@@ -419,7 +457,7 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "hiddenChanges" in page
     assert "included because it has a note" in page
     assert "fetch(`git/${encodeURIComponent(change.gitContextId)}`" in page
-    assert "Last changed in ${side} · by " in page
+    assert "Last changed in ${sideLabel} · by " in page
     assert "lastChangedLineRow" in page
     assert "line-git-context" in page
     assert 'content: "Git context"' in page
@@ -674,6 +712,39 @@ def test_web_viewer_can_browse_and_replace_comparison_directories(tmp_path: Path
                 "prod",
             }
 
+        environments_url = launch.url + "environments?root=" + quote(str(root))
+        with urllib.request.urlopen(environments_url, timeout=2) as response:
+            payload = json.load(response)
+            assert payload["root"] == str(root)
+            assert payload["repository"] == "project"
+            assert {item["name"] for item in payload["environments"]} == {
+                "dev",
+                "test",
+                "stage",
+                "prod",
+            }
+
+        preview_request = urllib.request.Request(
+            launch.url + "comparison-preview",
+            data=json.dumps(
+                {
+                    "source": str(next_source),
+                    "target": str(next_target),
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(preview_request, timeout=5) as response:
+            payload = json.load(response)
+            assert payload["sourceLabel"] == "stage"
+            assert payload["targetLabel"] == "prod"
+            assert payload["matchedFiles"] == 1
+            assert payload["modifiedFiles"] == 1
+            assert payload["differentFiles"] == 1
+            assert payload["sourceOnlyFiles"] == 0
+            assert payload["targetOnlyFiles"] == 0
+
         request = urllib.request.Request(
             launch.url + "comparison",
             data=json.dumps(
@@ -692,6 +763,12 @@ def test_web_viewer_can_browse_and_replace_comparison_directories(tmp_path: Path
                 "ok": True,
                 "source": str(next_source),
                 "target": str(next_target),
+                "sourceLabel": "stage",
+                "targetLabel": "prod",
+                "sourceColumnLabel": "STAGE",
+                "targetColumnLabel": "PROD",
+                "sourceRepository": "project",
+                "targetRepository": "project",
                 "fileCount": 1,
                 "persisted": False,
             }
@@ -702,6 +779,11 @@ def test_web_viewer_can_browse_and_replace_comparison_directories(tmp_path: Path
             assert str(next_source) in page
             assert str(next_target) in page
             assert "Change comparison" in page
+            assert '"sourceLabel":"stage"' in page
+            assert '"targetLabel":"prod"' in page
+            assert "updateComparisonButton" in page
+            assert "STAGE/second.yaml" in page
+            assert "PROD/second.yaml" in page
 
         persist_request = urllib.request.Request(
             launch.url + "comparison",

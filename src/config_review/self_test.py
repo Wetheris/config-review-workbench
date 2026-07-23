@@ -129,14 +129,15 @@ def run_regression_tests() -> int:
             def test_web_git_context_is_per_side_and_copy_is_always_available() -> None:
                 page = _render_page({"files": []}).decode("utf-8")
                 assert "lastChangedLineRow" in page
-                assert "Last changed in ${side} · by " in page
+                assert "Last changed in ${sideLabel} · by " in page
                 assert "Hide Git context" in page
                 assert 'content: "Git context"' in page
                 assert "$('copyDiff').hidden = false" in page
                 assert "Copied the displayed diff with original values" in page
 
             check(
-                "web Git context follows grouped TEST and DEV changes and copy is always available",
+                "web Git context follows grouped source and target changes "
+                "and copy is always available",
                 test_web_git_context_is_per_side_and_copy_is_always_available,
             )
 

@@ -32,12 +32,15 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .context_help import ContextCatalog, load_context_catalog
 from .core import (
     ChangeBlock,
+    DEFAULT_EXCLUDED_DIRS,
     DiffPresentation,
     DisplayLine,
     FileRecord,
     GitCommitContext,
     WorkbenchError,
     _is_yaml_order_continuation,
+    discover_yaml_files,
+    find_git_root,
     git_repository_commit_url,
     git_repository_merge_request_url,
     save_project_paths,
@@ -72,6 +75,84 @@ class _ContextGapSnapshot:
 
 
 ContextLookup = dict[str, _ContextGapSnapshot]
+
+
+def _directory_display_label(path: Path, other: Path) -> str:
+    """Return a compact label that distinguishes one comparison directory."""
+    name = path.name or str(path)
+    other_name = other.name or str(other)
+    if name.casefold() != other_name.casefold():
+        return name
+
+    parent_name = path.parent.name
+    other_parent_name = other.parent.name
+    if parent_name and parent_name.casefold() != other_parent_name.casefold():
+        return f"{parent_name}/{name}"
+
+    try:
+        common = Path(os.path.commonpath([str(path), str(other)]))
+        relative = path.relative_to(common).as_posix()
+    except (ValueError, OSError):
+        relative = str(path)
+    return relative or name
+
+
+def _comparison_identity(source: Path, target: Path) -> dict[str, str]:
+    """Return user-facing labels for two arbitrary comparison roots."""
+    source_label = _directory_display_label(source, target)
+    target_label = _directory_display_label(target, source)
+    source_git_root = find_git_root(source)
+    target_git_root = find_git_root(target)
+    return {
+        "sourceLabel": source_label,
+        "targetLabel": target_label,
+        "sourceColumnLabel": source_label.upper(),
+        "targetColumnLabel": target_label.upper(),
+        "sourceRepository": (
+            source_git_root.name if source_git_root is not None else source.parent.name
+        ),
+        "targetRepository": (
+            target_git_root.name if target_git_root is not None else target.parent.name
+        ),
+    }
+
+
+_WEB_GENERATED_LABEL_KINDS = {
+    "hunk",
+    "title",
+    "section",
+    "selector",
+    "selector_selected",
+    "selector_continuation",
+    "test_file_header",
+    "dev_file_header",
+    "file_header",
+    "handled",
+}
+
+
+def _replace_web_side_labels(
+    text: str,
+    *,
+    source_column_label: str,
+    target_column_label: str,
+) -> str:
+    """Replace legacy DEV/TEST presentation tokens without touching YAML values."""
+    text = re.sub(r"\bTEST\b", target_column_label, text)
+    return re.sub(r"\bDEV\b", source_column_label, text)
+
+
+def _web_status_text(
+    status: str,
+    *,
+    source_column_label: str,
+    target_column_label: str,
+) -> str:
+    return _replace_web_side_labels(
+        status,
+        source_column_label=source_column_label,
+        target_column_label=target_column_label,
+    )
 
 
 _PRIVACY_YAML_ASSIGNMENT_RE = re.compile(
@@ -944,6 +1025,12 @@ def _build_web_diff_snapshot(
     workbench: Workbench,
 ) -> tuple[dict[str, Any], GitLookup, ContextLookup]:
     """Build the browser snapshot and private read-only lookup tables."""
+    identity = _comparison_identity(
+        workbench.settings.source,
+        workbench.settings.target,
+    )
+    source_column_label = identity["sourceColumnLabel"]
+    target_column_label = identity["targetColumnLabel"]
     files: list[dict[str, Any]] = []
     git_lookup: GitLookup = {}
     context_lookup: ContextLookup = {}
@@ -1048,40 +1135,60 @@ def _build_web_diff_snapshot(
                 redactor,
                 context_catalog,
             )
-        files.append(
-            {
-                "path": record.relative_path,
-                "privatePath": redactor.redact_path(record.relative_path),
-                "status": status,
-                "states": list(record.states),
-                "contextRefs": context_catalog.match_path(record.relative_path),
-                "focused": focused_payload,
-                "focusedExpanded": focused_expanded_payload,
-                "raw": _presentation_payload(
-                    workbench,
-                    record,
-                    full,
-                    git_lookup,
-                    context_lookup,
-                    redactor,
-                    context_catalog,
-                ),
-                "counts": {
-                    "active": counts.active,
-                    "handled": counts.handled,
-                    "noiseHidden": counts.pattern_hidden,
-                    "whitespaceHidden": counts.whitespace_hidden,
-                    "orderHidden": counts.mapping_order_hidden,
-                },
-                "remote": {
-                    "testFileUrl": workbench.git_file_url(record.test_path),
-                    "devFileUrl": workbench.git_file_url(record.dev_path),
-                },
-            }
-        )
+        file_payload = {
+            "path": record.relative_path,
+            "privatePath": redactor.redact_path(record.relative_path),
+            "status": _web_status_text(
+                status,
+                source_column_label=source_column_label,
+                target_column_label=target_column_label,
+            ),
+            "states": list(record.states),
+            "contextRefs": context_catalog.match_path(record.relative_path),
+            "focused": focused_payload,
+            "focusedExpanded": focused_expanded_payload,
+            "raw": _presentation_payload(
+                workbench,
+                record,
+                full,
+                git_lookup,
+                context_lookup,
+                redactor,
+                context_catalog,
+            ),
+            "counts": {
+                "active": counts.active,
+                "handled": counts.handled,
+                "noiseHidden": counts.pattern_hidden,
+                "whitespaceHidden": counts.whitespace_hidden,
+                "orderHidden": counts.mapping_order_hidden,
+            },
+            "remote": {
+                "testFileUrl": workbench.git_file_url(record.test_path),
+                "devFileUrl": workbench.git_file_url(record.dev_path),
+            },
+        }
+        for view_name in ("focused", "focusedExpanded", "raw"):
+            view = file_payload[view_name]
+            for line in view["lines"]:
+                if line["kind"] not in _WEB_GENERATED_LABEL_KINDS:
+                    continue
+                line["text"] = _replace_web_side_labels(
+                    line["text"],
+                    source_column_label=source_column_label,
+                    target_column_label=target_column_label,
+                )
+                line["privateText"] = _replace_web_side_labels(
+                    line["privateText"],
+                    source_column_label=source_column_label,
+                    target_column_label=target_column_label,
+                )
+        files.append(file_payload)
 
     if not files:
-        raise WorkbenchError("No current DEV/TEST differences are available for the web viewer.")
+        raise WorkbenchError(
+            "No current source/target differences are available for the web viewer."
+        )
 
     snapshot = {
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -1090,12 +1197,13 @@ def _build_web_diff_snapshot(
         "comparison": {
             "source": str(workbench.settings.source),
             "target": str(workbench.settings.target),
+            **identity,
             "launchDirectory": str(Path.cwd().resolve()),
             "configFile": str(workbench.settings.config_file),
             "canPersist": not workbench.settings.dry_run,
         },
-        "privateSource": "[DEV ROOT]",
-        "privateTarget": "[TEST ROOT]",
+        "privateSource": "[SOURCE ROOT]",
+        "privateTarget": "[TARGET ROOT]",
         "gitStatus": workbench.git_status.summary,
         "privateGitStatus": "Git context hidden in privacy mode",
         "gitLinks": {
@@ -1305,6 +1413,86 @@ def _directory_listing_payload(workbench: Workbench, requested: str | None) -> d
     }
 
 
+def _environment_listing_payload(root_value: str) -> dict[str, Any]:
+    """Return direct child directories that contain comparable YAML files."""
+    root = _resolve_browser_directory(root_value)
+    environments: list[dict[str, Any]] = []
+    truncated = False
+    try:
+        children = sorted(
+            (
+                item
+                for item in root.iterdir()
+                if item.is_dir() and not item.name.startswith(".")
+            ),
+            key=lambda item: item.name.casefold(),
+        )
+    except OSError as exc:
+        raise WorkbenchError(
+            f"Could not inspect repository directory {root}: {exc}"
+        ) from exc
+
+    if len(children) > 250:
+        children = children[:250]
+        truncated = True
+    for child in children:
+        yaml_files = discover_yaml_files(child, set(DEFAULT_EXCLUDED_DIRS))
+        if not yaml_files:
+            continue
+        environments.append(
+            {
+                "name": child.name,
+                "path": str(child.resolve()),
+                "yamlFiles": len(yaml_files),
+            }
+        )
+    return {
+        "root": str(root),
+        "repository": (find_git_root(root) or root).name,
+        "environments": environments,
+        "truncated": truncated,
+    }
+
+
+def _comparison_preview_payload(
+    current: Workbench,
+    source_value: str,
+    target_value: str,
+) -> dict[str, Any]:
+    """Build a read-only summary before replacing the active comparison."""
+    preview = _build_replacement_workbench(current, source_value, target_value)
+    source_only = 0
+    target_only = 0
+    modified = 0
+    identical = 0
+    matched = 0
+    for record in preview.records:
+        if record.dev_exists and record.test_exists:
+            matched += 1
+            if record.equal:
+                identical += 1
+            else:
+                modified += 1
+        elif record.dev_exists:
+            source_only += 1
+        elif record.test_exists:
+            target_only += 1
+
+    identity = _comparison_identity(preview.settings.source, preview.settings.target)
+    return {
+        "source": str(preview.settings.source),
+        "target": str(preview.settings.target),
+        **identity,
+        "totalFiles": len(preview.records),
+        "matchedFiles": matched,
+        "modifiedFiles": modified,
+        "identicalFiles": identical,
+        "sourceOnlyFiles": source_only,
+        "targetOnlyFiles": target_only,
+        "differentFiles": modified + source_only + target_only,
+    }
+
+
 def _build_replacement_workbench(
     current: Workbench,
     source_value: str,
@@ -1367,6 +1555,7 @@ def _replace_server_comparison(
         "ok": True,
         "source": str(replacement.settings.source),
         "target": str(replacement.settings.target),
+        **_comparison_identity(replacement.settings.source, replacement.settings.target),
         "fileCount": len(snapshot["files"]),
         "persisted": persist,
     }
@@ -1908,17 +2097,60 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .modal-body { min-height: 0; overflow: auto; padding: 16px; }
 .comparison-help { margin: 0 0 14px; color: var(--muted); }
-.comparison-grid { display: grid; gap: 12px; }
+.comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.comparison-side {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.comparison-side-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.comparison-side-heading strong { font-size: 13px; }
+.comparison-side-heading span { color: var(--muted); font-size: 11px; }
 .comparison-field label { display: block; margin-bottom: 5px; font-weight: 700; }
+.comparison-field + .comparison-field { margin-top: 10px; }
 .path-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
-.path-entry input {
+.path-entry input, .comparison-field select {
   width: 100%;
   min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
+  color: var(--text);
 }
+.environment-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.environment-status { min-height: 18px; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.exact-directory-label { color: var(--muted); font-size: 11px; }
+.comparison-preview {
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel2);
+}
+.comparison-preview[hidden] { display: none; }
+.comparison-preview-title { font-weight: 800; margin-bottom: 7px; }
+.comparison-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.comparison-preview-grid div {
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-align: center;
+  font-size: 11px;
+}
+.comparison-preview-grid strong { display: block; font-size: 15px; }
 .path-entry button, .comparison-actions button, .folder-toolbar button, .shortcut-button,
 .folder-row {
   border: 1px solid var(--border);
@@ -2060,7 +2292,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .review-panel { margin-left: 115px; }
   .context-grid { grid-template-columns: 1fr; }
   .modal-backdrop { padding: 8px; }
+  .comparison-grid { grid-template-columns: 1fr; }
   .path-entry { grid-template-columns: 1fr; }
+  .environment-entry { grid-template-columns: 1fr; }
+  .comparison-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dictionary-layout { grid-template-columns: 1fr; max-height: calc(100vh - 185px); }
   .dictionary-list { max-height: 250px; border-right: 0; border-bottom: 1px solid var(--border); }
 }
@@ -2086,12 +2321,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <button id="next" title="Next file (])">File →</button>
         <button id="focused" class="active">Focused</button>
         <button id="raw">Raw</button>
-        <button id="changeComparison" type="button" title="Choose different source and target directories">Change comparison…</button>
+        <button id="changeComparison" type="button" title="Choose different repositories, environments, or directories">Comparison ▾</button>
         <button id="contextHelp" class="context-help-button" type="button" aria-pressed="false" title="Turn context help on">?</button>
         <button id="hideFile" title="Temporarily remove this file from the active tree">Hide file</button>
         <button id="reviewFile" title="Mark this file reviewed for the temporary review report">Mark reviewed</button>
         <button id="saveReview" title="Save all current-view changes and reviewer notes as plaintext">Save review…</button>
-        <button id="copyDiff" type="button" title="Copy the currently displayed diff, including TEST and DEV line numbers">Copy displayed diff</button>
+        <button id="copyDiff" type="button" title="Copy the currently displayed diff, including source and target line numbers">Copy displayed diff</button>
         <details id="reviewMenu" class="view-menu">
           <summary>Review ▾</summary>
           <div class="view-menu-panel">
@@ -2145,22 +2380,64 @@ button, input, select, textarea { font: inherit; color: inherit; }
       <button id="closeComparison" class="modal-close" type="button" aria-label="Close">×</button>
     </div>
     <div class="modal-body">
-      <p class="comparison-help">Choose the incoming/source directory and current/target directory. Applying a new comparison reloads this browser view and clears temporary notes, hidden files, and reviewed-file state.</p>
+      <p class="comparison-help">Choose any two repository environments or exact directories. The left side is incoming/source; the right side is the current target. Applying a new comparison reloads this browser view and clears temporary notes, hidden files, and reviewed-file state.</p>
       <div class="comparison-grid">
-        <div class="comparison-field">
-          <label for="sourceDirectory">Incoming / source directory</label>
-          <div class="path-entry">
-            <input id="sourceDirectory" type="text" spellcheck="false" autocomplete="off">
-            <button id="browseSource" type="button">Browse…</button>
+        <section class="comparison-side">
+          <div class="comparison-side-heading">
+            <strong>Incoming / source</strong>
+            <span id="sourceSideLabel"></span>
           </div>
-        </div>
-        <div class="comparison-field">
-          <label for="targetDirectory">Current / target directory</label>
-          <div class="path-entry">
-            <input id="targetDirectory" type="text" spellcheck="false" autocomplete="off">
-            <button id="browseTarget" type="button">Browse…</button>
+          <div class="comparison-field">
+            <label for="sourceRepositoryRoot">Repository or environment parent</label>
+            <div class="path-entry">
+              <input id="sourceRepositoryRoot" type="text" spellcheck="false" autocomplete="off">
+              <button id="browseSourceRoot" type="button">Browse…</button>
+            </div>
           </div>
-        </div>
+          <div class="comparison-field">
+            <label for="sourceEnvironment">Environment</label>
+            <div class="environment-entry">
+              <select id="sourceEnvironment"></select>
+              <button id="refreshSourceEnvironments" type="button">Find</button>
+            </div>
+            <div id="sourceEnvironmentStatus" class="environment-status"></div>
+          </div>
+          <div class="comparison-field">
+            <label class="exact-directory-label" for="sourceDirectory">Exact comparison directory</label>
+            <div class="path-entry">
+              <input id="sourceDirectory" type="text" spellcheck="false" autocomplete="off">
+              <button id="browseSource" type="button">Browse…</button>
+            </div>
+          </div>
+        </section>
+        <section class="comparison-side">
+          <div class="comparison-side-heading">
+            <strong>Current / target</strong>
+            <span id="targetSideLabel"></span>
+          </div>
+          <div class="comparison-field">
+            <label for="targetRepositoryRoot">Repository or environment parent</label>
+            <div class="path-entry">
+              <input id="targetRepositoryRoot" type="text" spellcheck="false" autocomplete="off">
+              <button id="browseTargetRoot" type="button">Browse…</button>
+            </div>
+          </div>
+          <div class="comparison-field">
+            <label for="targetEnvironment">Environment</label>
+            <div class="environment-entry">
+              <select id="targetEnvironment"></select>
+              <button id="refreshTargetEnvironments" type="button">Find</button>
+            </div>
+            <div id="targetEnvironmentStatus" class="environment-status"></div>
+          </div>
+          <div class="comparison-field">
+            <label class="exact-directory-label" for="targetDirectory">Exact comparison directory</label>
+            <div class="path-entry">
+              <input id="targetDirectory" type="text" spellcheck="false" autocomplete="off">
+              <button id="browseTarget" type="button">Browse…</button>
+            </div>
+          </div>
+        </section>
       </div>
       <div class="comparison-options">
         <button id="swapComparison" type="button">Swap source and target</button>
@@ -2168,6 +2445,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
           <input id="persistComparison" type="checkbox">
           Save these paths as the project default
         </label>
+      </div>
+      <div id="comparisonPreview" class="comparison-preview" hidden>
+        <div id="comparisonPreviewTitle" class="comparison-preview-title"></div>
+        <div id="comparisonPreviewGrid" class="comparison-preview-grid"></div>
       </div>
       <div id="folderBrowser" class="folder-browser" hidden>
         <div class="folder-toolbar">
@@ -2182,7 +2463,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
       <div id="comparisonError" class="comparison-error" role="alert"></div>
       <div class="comparison-actions">
         <button id="cancelComparison" type="button">Cancel</button>
-        <button id="applyComparison" class="primary" type="button">Compare directories</button>
+        <button id="previewComparison" type="button">Preview files</button>
+        <button id="applyComparison" class="primary" type="button">Start comparison</button>
       </div>
     </div>
   </section>
@@ -2232,6 +2514,7 @@ let selectedContextId = contextEntries[0]?.id ?? null;
 let contextTooltipTimer = null;
 let contextHelpMode = false;
 let browseInput = null;
+let browseAfterSelect = null;
 let browsePath = '';
 let browseParent = '';
 const $ = id => document.getElementById(id);
@@ -2248,26 +2531,155 @@ function comparisonSettings() {
   };
 }
 
+function sourceLabel() {
+  return comparisonSettings().sourceLabel ?? 'source';
+}
+
+function targetLabel() {
+  return comparisonSettings().targetLabel ?? 'target';
+}
+
+function sourceColumnLabel() {
+  return comparisonSettings().sourceColumnLabel ?? sourceLabel().toUpperCase();
+}
+
+function targetColumnLabel() {
+  return comparisonSettings().targetColumnLabel ?? targetLabel().toUpperCase();
+}
+
+function parentDirectory(path) {
+  const normalized = String(path ?? '').replace(/[\\/]+$/, '');
+  const slash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+  return slash > 0 ? normalized.slice(0, slash) : normalized;
+}
+
+function basename(path) {
+  const normalized = String(path ?? '').replace(/[\\/]+$/, '');
+  const slash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+  return slash >= 0 ? normalized.slice(slash + 1) : normalized;
+}
+
+function updateComparisonButton() {
+  const comparison = comparisonSettings();
+  const button = $('changeComparison');
+  button.textContent = `${comparison.sourceLabel ?? basename(comparison.source)} → ${comparison.targetLabel ?? basename(comparison.target)} ▾`;
+  button.title = [
+    `Source: ${comparison.source}`,
+    `Target: ${comparison.target}`,
+    'Click to compare different repositories, environments, or directories.',
+  ].join('\n');
+}
+
 function openComparisonModal() {
   const comparison = comparisonSettings();
   $('sourceDirectory').value = comparison.source ?? snapshot.source ?? '';
   $('targetDirectory').value = comparison.target ?? snapshot.target ?? '';
+  $('sourceRepositoryRoot').value = parentDirectory($('sourceDirectory').value);
+  $('targetRepositoryRoot').value = parentDirectory($('targetDirectory').value);
+  $('sourceSideLabel').textContent = comparison.sourceLabel ?? basename(comparison.source);
+  $('targetSideLabel').textContent = comparison.targetLabel ?? basename(comparison.target);
   $('persistComparison').checked = false;
   $('persistComparison').disabled = !comparison.canPersist;
   $('persistComparison').closest('label').title = comparison.canPersist
     ? `Optionally save to ${comparison.configFile}`
     : 'Unavailable while the workbench is running in dry-run mode';
   $('comparisonError').textContent = '';
+  $('comparisonPreview').hidden = true;
   $('folderBrowser').hidden = true;
   $('comparisonModal').hidden = false;
-  $('sourceDirectory').focus();
-  $('sourceDirectory').select();
+  loadEnvironments('source', basename($('sourceDirectory').value));
+  loadEnvironments('target', basename($('targetDirectory').value));
+  $('sourceRepositoryRoot').focus();
+  $('sourceRepositoryRoot').select();
 }
 
 function closeComparisonModal() {
   $('comparisonModal').hidden = true;
   $('folderBrowser').hidden = true;
   browseInput = null;
+  browseAfterSelect = null;
+}
+
+function environmentElements(side) {
+  const prefix = side === 'source' ? 'source' : 'target';
+  return {
+    root: $(`${prefix}RepositoryRoot`),
+    select: $(`${prefix}Environment`),
+    directory: $(`${prefix}Directory`),
+    status: $(`${prefix}EnvironmentStatus`),
+    sideLabel: $(`${prefix}SideLabel`),
+  };
+}
+
+async function loadEnvironments(side, preferred = '') {
+  const elements = environmentElements(side);
+  const root = elements.root.value.trim();
+  elements.select.replaceChildren();
+  const loading = document.createElement('option');
+  loading.textContent = 'Loading environments…';
+  loading.value = '';
+  elements.select.append(loading);
+  elements.select.disabled = true;
+  elements.status.textContent = '';
+  if (!root) {
+    loading.textContent = 'Choose a repository or parent directory';
+    return;
+  }
+  try {
+    const response = await fetch(`environments?root=${encodeURIComponent(root)}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json'},
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Environment request failed (${response.status})`);
+    elements.root.value = payload.root;
+    elements.select.replaceChildren();
+    for (const environment of payload.environments ?? []) {
+      const option = document.createElement('option');
+      option.value = environment.path;
+      option.textContent = `${environment.name} (${environment.yamlFiles} YAML)`;
+      option.dataset.name = environment.name;
+      elements.select.append(option);
+    }
+    if (!elements.select.options.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No environment folders found — use exact directory';
+      elements.select.append(option);
+      elements.status.textContent = 'No direct child folder with YAML files was found.';
+      return;
+    }
+    elements.select.disabled = false;
+    const wanted = [...elements.select.options].find(option => {
+      return option.dataset.name?.toLowerCase() === String(preferred).toLowerCase();
+    });
+    if (wanted) elements.select.value = wanted.value;
+    else if (elements.directory.value) {
+      const exact = [...elements.select.options].find(option => option.value === elements.directory.value);
+      if (exact) elements.select.value = exact.value;
+    }
+    if (!elements.select.value) elements.select.selectedIndex = 0;
+    selectEnvironment(side);
+    elements.status.textContent = `${payload.environments.length} environment folder${payload.environments.length === 1 ? '' : 's'} found in ${payload.repository}.`;
+    if (payload.truncated) elements.status.textContent += ' Results were limited.';
+  } catch (error) {
+    elements.select.replaceChildren();
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Could not load environments';
+    elements.select.append(option);
+    elements.status.textContent = error.message;
+  }
+}
+
+function selectEnvironment(side) {
+  const elements = environmentElements(side);
+  const selectedOption = elements.select.selectedOptions[0];
+  if (!selectedOption?.value) return;
+  elements.directory.value = selectedOption.value;
+  elements.sideLabel.textContent = selectedOption.dataset.name ?? basename(selectedOption.value);
+  $('comparisonPreview').hidden = true;
 }
 
 function contextMatches(ids = []) {
@@ -2558,10 +2970,63 @@ async function loadDirectory(path = '') {
   }
 }
 
-function browseFor(input) {
+function browseFor(input, afterSelect = null) {
   browseInput = input;
+  browseAfterSelect = afterSelect;
   $('folderBrowser').hidden = false;
   loadDirectory(input.value.trim());
+}
+
+function renderComparisonPreview(payload) {
+  const host = $('comparisonPreviewGrid');
+  host.replaceChildren();
+  $('comparisonPreviewTitle').textContent = `${payload.sourceLabel} → ${payload.targetLabel}`;
+  for (const [label, value] of [
+    ['Different', payload.differentFiles],
+    ['Modified', payload.modifiedFiles],
+    [`Only in ${payload.sourceLabel}`, payload.sourceOnlyFiles],
+    [`Only in ${payload.targetLabel}`, payload.targetOnlyFiles],
+    ['Matched', payload.matchedFiles],
+    ['Identical', payload.identicalFiles],
+  ]) {
+    const item = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = String(value);
+    item.append(strong, label);
+    host.append(item);
+  }
+  $('comparisonPreview').hidden = false;
+}
+
+async function previewComparison() {
+  const source = $('sourceDirectory').value.trim();
+  const target = $('targetDirectory').value.trim();
+  if (!source || !target) {
+    $('comparisonError').textContent = 'Choose both a source directory and a target directory.';
+    return;
+  }
+  const button = $('previewComparison');
+  button.disabled = true;
+  button.textContent = 'Checking files…';
+  $('comparisonError').textContent = '';
+  try {
+    const response = await fetch('comparison-preview', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+      body: JSON.stringify({source, target}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Preview request failed (${response.status})`);
+    renderComparisonPreview(payload);
+  } catch (error) {
+    $('comparisonPreview').hidden = true;
+    $('comparisonError').textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Preview files';
+  }
 }
 
 async function applyComparison() {
@@ -2596,7 +3061,7 @@ async function applyComparison() {
   } catch (error) {
     $('comparisonError').textContent = error.message;
     button.disabled = false;
-    button.textContent = 'Compare directories';
+    button.textContent = 'Start comparison';
   }
 }
 
@@ -2687,12 +3152,12 @@ function lineElement(line) {
   const tl = lineNumberElement(
     line.testLine,
     privacyMode ? null : file?.remote?.testFileUrl,
-    'TEST',
+    targetColumnLabel(),
   );
   const dl = lineNumberElement(
     line.devLine,
     privacyMode ? null : file?.remote?.devFileUrl,
-    'DEV',
+    sourceColumnLabel(),
   );
   const prefix = document.createElement('div');
   prefix.className = 'prefix';
@@ -2988,12 +3453,12 @@ function contextGapElement(gap, position) {
 
 
 function commitContextForSide(context, side) {
-  const values = side === 'DEV' ? context.dev : context.test;
+  const values = side === 'SOURCE' ? context.dev : context.test;
   return values?.[0] ?? null;
 }
 
 function lastChangedLineRow(change, side) {
-  const isTest = side === 'TEST';
+  const isTest = side === 'TARGET';
   const start = Number(isTest ? change.testStart : change.devStart) + 1;
   const end = Number(isTest ? change.testEnd : change.devEnd);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
@@ -3014,16 +3479,17 @@ function lineGitContextElement(side, context) {
   const host = document.createElement('div');
   host.className = 'line-git-context';
   host.dataset.side = side;
+  const sideLabel = side === 'SOURCE' ? sourceColumnLabel() : targetColumnLabel();
   const commit = commitContextForSide(context, side);
   if (!commit) {
     host.classList.add('no-context');
-    host.textContent = context.error || `No tracked ${side} commit context was available.`;
+    host.textContent = context.error || `No tracked ${sideLabel} commit context was available.`;
     return host;
   }
 
   const prefix = document.createElement('span');
   prefix.className = 'inline-git-prefix';
-  prefix.textContent = `Last changed in ${side} · by `;
+  prefix.textContent = `Last changed in ${sideLabel} · by `;
   const author = document.createElement('span');
   author.className = 'inline-git-author';
   author.textContent = commit.author || 'unknown author';
@@ -3050,7 +3516,7 @@ async function renderInlineGitContext(change) {
   if (privacyMode || !inlineGitContextKeys.has(change.key)) return;
   const context = await getGitContext(change);
   if (privacyMode || !inlineGitContextKeys.has(change.key)) return;
-  for (const side of ['TEST', 'DEV']) {
+  for (const side of ['TARGET', 'SOURCE']) {
     const row = lastChangedLineRow(change, side);
     if (!row) continue;
     row.querySelector(`:scope > .line-git-context[data-side="${side}"]`)?.remove();
@@ -3126,7 +3592,7 @@ function reviewActionRow(panel, change) {
   gitButton.onclick = () => {
     if (inlineGitContextKeys.has(change.key)) {
       inlineGitContextKeys.delete(change.key);
-      for (const side of ['TEST', 'DEV']) {
+      for (const side of ['TARGET', 'SOURCE']) {
         lastChangedLineRow(change, side)
           ?.querySelector(`:scope > .line-git-context[data-side="${side}"]`)
           ?.remove();
@@ -3157,10 +3623,10 @@ function reviewPanel(change) {
   label.textContent = displayChangeLabel(change);
   const ranges = document.createElement('span');
   ranges.className = 'review-ranges';
-  ranges.textContent = `TEST ${change.testRange} → DEV ${change.devRange}`;
+  ranges.textContent = `${targetColumnLabel()} ${change.testRange} → ${sourceColumnLabel()} ${change.devRange}`;
   const remoteLinks = document.createElement('span');
   remoteLinks.className = 'review-remote-links';
-  for (const [side, url] of [['TEST', change.testRemoteUrl], ['DEV', change.devRemoteUrl]]) {
+  for (const [side, url] of [[targetColumnLabel(), change.testRemoteUrl], [sourceColumnLabel(), change.devRemoteUrl]]) {
     if (privacyMode) continue;
     if (!url) continue;
     const link = document.createElement('a');
@@ -3179,7 +3645,7 @@ function reviewPanel(change) {
   if (change.splitPhysical) {
     const splitNotice = document.createElement('div');
     splitNotice.className = 'split-change-note';
-    splitNotice.textContent = 'This is one keyed-list value change. Its TEST and DEV rows appear at separate physical YAML positions.';
+    splitNotice.textContent = `This is one keyed-list value change. Its ${targetColumnLabel()} and ${sourceColumnLabel()} rows appear at separate physical YAML positions.`;
     panel.append(splitNotice);
   }
 
@@ -3426,7 +3892,7 @@ function displayedDiffText() {
     '='.repeat(80),
     `FILE: ${displayFilePath(file)}`,
     `VIEW: ${mode === 'focused' ? 'Focused' : 'Raw'}`,
-    `LINE COLUMNS: ${'TEST'.padStart(testWidth)} | ${'DEV'.padStart(devWidth)}`,
+    `LINE COLUMNS: ${targetColumnLabel().padStart(testWidth)} | ${sourceColumnLabel().padStart(devWidth)}`,
     '',
   ];
   for (const element of elements) {
@@ -3500,16 +3966,17 @@ async function chooseDestination(filename) {
 function formatInlineCommitLines(context, change) {
   const lines = [];
   for (const [side, hasLines] of [
-    ['TEST', change.oldLines.length > 0],
-    ['DEV', change.newLines.length > 0],
+    ['TARGET', change.oldLines.length > 0],
+    ['SOURCE', change.newLines.length > 0],
   ]) {
     if (!hasLines) continue;
+    const sideLabel = side === 'SOURCE' ? sourceColumnLabel() : targetColumnLabel();
     const commit = commitContextForSide(context, side);
     if (!commit) {
-      lines.push(context.error || `No tracked ${side} commit context was available.`);
+      lines.push(context.error || `No tracked ${sideLabel} commit context was available.`);
       continue;
     }
-    lines.push(`Last changed in ${side} · by ${commit.author || 'unknown author'} · ${commit.subject || 'No commit subject'} · ${commit.hash || '—'}`);
+    lines.push(`Last changed in ${sideLabel} · by ${commit.author || 'unknown author'} · ${commit.subject || 'No commit subject'} · ${commit.hash || '—'}`);
   }
   return lines;
 }
@@ -3538,8 +4005,8 @@ async function buildPlaintextReview(
     `Snapshot:  ${snapshot.generatedAt}`,
     `View:      ${mode === 'focused' ? 'Focused Diff' : 'Raw Diff'}`,
     `Privacy:   ${privacyMode ? 'ON — sensitive values, personal references, Git context, remote links, and reviewer notes omitted or redacted' : 'OFF'}`,
-    `TEST:      ${privacyMode ? snapshot.privateTarget : snapshot.target}`,
-    `DEV:       ${privacyMode ? snapshot.privateSource : snapshot.source}`,
+    `${targetColumnLabel()}:      ${privacyMode ? snapshot.privateTarget : snapshot.target}`,
+    `${sourceColumnLabel()}:       ${privacyMode ? snapshot.privateSource : snapshot.source}`,
     `Git:       ${privacyMode ? snapshot.privateGitStatus : snapshot.gitStatus}`,
     '',
   ];
@@ -3576,7 +4043,7 @@ async function buildPlaintextReview(
         : '';
       lines.push(`${index + 1}. ${displayChangeLabel(change)}${hiddenSuffix}`);
       lines.push('-'.repeat(80));
-      lines.push(`TEST ${change.testRange} -> DEV ${change.devRange}`);
+      lines.push(`${targetColumnLabel()} ${change.testRange} -> ${sourceColumnLabel()} ${change.devRange}`);
       lines.push('');
       const oldLines = privacyMode ? (change.privateOldLines ?? []) : change.oldLines;
       const newLines = privacyMode ? (change.privateNewLines ?? []) : change.newLines;
@@ -3738,8 +4205,8 @@ function applyPrivacyMode() {
   button.textContent = privacyMode ? 'Show original values' : 'Hide sensitive values';
   $('copyDiff').hidden = false;
   $('copyDiff').title = privacyMode
-    ? 'Copy the currently displayed redacted diff, including TEST and DEV line numbers'
-    : 'Copy the currently displayed diff with original values and TEST and DEV line numbers';
+    ? 'Copy the currently displayed redacted diff, including source and target line numbers'
+    : 'Copy the currently displayed diff with original values and source and target line numbers';
   applyContextHelpMode();
   $('viewMenu').open = false;
   gapStateById.clear();
@@ -3771,17 +4238,54 @@ $('contextTooltip').addEventListener('mouseleave', scheduleContextTooltipHide);
 $('closeComparison').onclick = closeComparisonModal;
 $('cancelComparison').onclick = closeComparisonModal;
 $('swapComparison').onclick = () => {
-  const source = $('sourceDirectory').value;
-  $('sourceDirectory').value = $('targetDirectory').value;
-  $('targetDirectory').value = source;
+  for (const suffix of ['Directory', 'RepositoryRoot']) {
+    const source = $(`source${suffix}`).value;
+    $(`source${suffix}`).value = $(`target${suffix}`).value;
+    $(`target${suffix}`).value = source;
+  }
+  const sourceLabelText = $('sourceSideLabel').textContent;
+  $('sourceSideLabel').textContent = $('targetSideLabel').textContent;
+  $('targetSideLabel').textContent = sourceLabelText;
+  loadEnvironments('source', basename($('sourceDirectory').value));
+  loadEnvironments('target', basename($('targetDirectory').value));
+  $('comparisonPreview').hidden = true;
 };
 $('browseSource').onclick = () => browseFor($('sourceDirectory'));
 $('browseTarget').onclick = () => browseFor($('targetDirectory'));
+$('browseSourceRoot').onclick = () => browseFor(
+  $('sourceRepositoryRoot'),
+  () => loadEnvironments('source', basename($('sourceDirectory').value)),
+);
+$('browseTargetRoot').onclick = () => browseFor(
+  $('targetRepositoryRoot'),
+  () => loadEnvironments('target', basename($('targetDirectory').value)),
+);
+$('refreshSourceEnvironments').onclick = () => loadEnvironments(
+  'source',
+  basename($('sourceDirectory').value),
+);
+$('refreshTargetEnvironments').onclick = () => loadEnvironments(
+  'target',
+  basename($('targetDirectory').value),
+);
+$('sourceEnvironment').addEventListener('change', () => selectEnvironment('source'));
+$('targetEnvironment').addEventListener('change', () => selectEnvironment('target'));
+$('sourceDirectory').addEventListener('input', () => {
+  $('sourceSideLabel').textContent = basename($('sourceDirectory').value);
+  $('comparisonPreview').hidden = true;
+});
+$('targetDirectory').addEventListener('input', () => {
+  $('targetSideLabel').textContent = basename($('targetDirectory').value);
+  $('comparisonPreview').hidden = true;
+});
 $('folderUp').onclick = () => loadDirectory(browseParent);
 $('useFolder').onclick = () => {
   if (browseInput && browsePath) browseInput.value = browsePath;
   $('folderBrowser').hidden = true;
+  if (browseAfterSelect) browseAfterSelect();
+  browseAfterSelect = null;
 };
+$('previewComparison').onclick = previewComparison;
 $('applyComparison').onclick = applyComparison;
 $('comparisonModal').addEventListener('click', event => {
   if (event.target === $('comparisonModal')) closeComparisonModal();
@@ -3858,6 +4362,7 @@ window.addEventListener('beforeunload', event => {
   event.returnValue = '';
 });
 applyTheme();
+updateComparisonButton();
 applyPrivacyMode();
 </script>
 </body>
@@ -3933,6 +4438,17 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             self._send_json(200, payload)
             return
 
+        environments_path = f"/{self.server.token}/environments"
+        if path == environments_path:
+            root = (parse_qs(parsed.query).get("root") or [""])[0]
+            try:
+                payload = _environment_listing_payload(root)
+            except WorkbenchError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, payload)
+            return
+
         context_prefix = f"/{self.server.token}/context/"
         if path.startswith(context_prefix):
             context_id = unquote(path[len(context_prefix) :])
@@ -3978,7 +4494,8 @@ class _ViewerHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urlsplit(self.path)
         comparison_path = f"/{self.server.token}/comparison"
-        if parsed.path != comparison_path:
+        preview_path = f"/{self.server.token}/comparison-preview"
+        if parsed.path not in {comparison_path, preview_path}:
             self.send_error(405)
             return
 
@@ -4000,10 +4517,23 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             return
         source = payload.get("source")
         target = payload.get("target")
-        persist = payload.get("persist", False)
         if not isinstance(source, str) or not isinstance(target, str):
             self._send_json(400, {"error": "Source and target paths must be strings."})
             return
+        if parsed.path == preview_path:
+            try:
+                result = _comparison_preview_payload(
+                    self.server.workbench,
+                    source,
+                    target,
+                )
+            except (OSError, WorkbenchError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, result)
+            return
+
+        persist = payload.get("persist", False)
         if not isinstance(persist, bool):
             self._send_json(400, {"error": "Persist must be true or false."})
             return
