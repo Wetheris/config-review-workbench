@@ -1,24 +1,76 @@
+# Safe starter context catalog for the shared repository.
+# Add only generic, non-sensitive definitions here.
+
 schemaVersion: 1
 entries:
-  - id: interval
-    title: interval
-    category: Project Context
-    summary: test
-    matches:
-      - type: yaml-key
-        value: interval
-        files:
-          - ms/keycloak-helm-repo.yaml
-  - id: spec
-    title: spec
-    category: Project Context
-    summary: Defines the desired configuration and behavior of this Kubernetes or OpenShift resource
-    details: The spec section describes what the resource should look like or do. Its available 
-      fields depend on the resource kind. For example, a HelmRepository spec defines the repository 
-      URL, polling interval, provider settings, and authentication references.
-    aliases:
-      - resource spec
-    matches:
-      - type: yaml-key
-        value: spec
-        files: []
+- id: kubernetes-api-version
+  title: apiVersion
+  category: Kubernetes Resources
+  summary: Identifies the Kubernetes API group and version used to interpret the resource.
+  matches:
+  - type: yaml-key
+    value: apiVersion
+- id: kubernetes-kind
+  title: kind
+  category: Kubernetes Resources
+  summary: Identifies the Kubernetes resource type represented by the YAML object.
+  matches:
+  - type: yaml-key
+    value: kind
+- id: kubernetes-spec
+  title: spec
+  category: Kubernetes Resources
+  summary: Defines the desired configuration and behavior of a Kubernetes resource.
+  matches:
+  - type: yaml-key
+    value: spec
+- id: kubernetes-metadata-name
+  title: metadata.name
+  category: Kubernetes Resources
+  summary: The unique name assigned to a Kubernetes resource within its namespace.
+  matches:
+  - type: yaml-path
+    value: metadata.name
+- id: flux-source-reference
+  title: sourceRef
+  category: Flux / GitOps
+  summary: References another Flux resource that provides source content or configuration.
+  details: The exact allowed target depends on the resource kind and YAML path.
+  matches:
+  - type: yaml-key
+    value: sourceRef
+- id: flux-values-key
+  title: valuesKey
+  category: Flux / GitOps
+  summary: Selects the key in a referenced ConfigMap or Secret that contains Helm values.
+  matches:
+  - type: yaml-path
+    value: spec.valuesFrom.valuesKey
+- id: helm-values-file
+  title: values.yaml
+  category: Helm & Packaging
+  summary: A Helm values file containing configuration supplied to chart templates during rendering.
+  matches:
+  - type: file-name
+    value: values.yaml
+- id: development-environment
+  title: Development environment
+  category: Environments & Repository Layout
+  summary: A non-production environment used to combine and validate changes during development.
+  aliases:
+  - DEV
+  matches:
+  - type: path-segment
+    value: dev
+- id: gitlab-script
+  title: script
+  category: GitLab CI/CD
+  summary: Contains the primary shell commands executed by a GitLab pipeline job.
+  matches:
+  - type: yaml-key
+    value: script
+    files:
+    - .gitlab-ci.yml
+    - .gitlab-ci.yaml
+    - '*pipeline*.yml'
+    - '*pipeline*.yaml'

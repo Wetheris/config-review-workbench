@@ -82,6 +82,8 @@ class _ContextGapSnapshot:
     context_refs: tuple[tuple[str, ...], ...] = ()
     context_suggestions: tuple[dict[str, Any] | None, ...] = ()
     context_targets: tuple[tuple[dict[str, Any], ...], ...] = ()
+    relative_path: str = ""
+    yaml_paths: tuple[str | None, ...] = ()
 
 
 ContextLookup = dict[str, _ContextGapSnapshot]
@@ -811,6 +813,10 @@ def _timeline_context_gaps(
                     )
                     for index, value in enumerate(values)
                 ),
+                relative_path=record.relative_path,
+                yaml_paths=tuple(
+                    test_paths.get(consumed_test + index + 1) for index, _value in enumerate(values)
+                ),
             ),
         )
         leading = consumed_test == 0 and consumed_dev == 0
@@ -1384,6 +1390,7 @@ def _context_gap_payload(
     *,
     count: int,
     edge: str,
+    context_catalog: ContextCatalog | None = None,
 ) -> dict[str, Any]:
     count = max(0, min(count, len(snapshot.lines)))
     if edge == "end":
@@ -1396,21 +1403,52 @@ def _context_gap_payload(
         if snapshot.private_lines
         else tuple(selected)
     )
-    context_selected = (
-        snapshot.context_refs[offset : offset + count]
-        if snapshot.context_refs
-        else tuple(() for _item in selected)
-    )
-    suggestion_selected = (
-        snapshot.context_suggestions[offset : offset + count]
-        if snapshot.context_suggestions
-        else tuple(None for _item in selected)
-    )
-    targets_selected = (
-        snapshot.context_targets[offset : offset + count]
-        if snapshot.context_targets
-        else tuple(() for _item in selected)
-    )
+    if context_catalog is not None and snapshot.relative_path:
+        selected_paths = snapshot.yaml_paths[offset : offset + count]
+        targets_selected = tuple(
+            tuple(
+                context_catalog.line_targets(
+                    snapshot.relative_path,
+                    text,
+                    yaml_path=(selected_paths[index] if index < len(selected_paths) else None),
+                )
+            )
+            for index, text in enumerate(selected)
+        )
+        context_selected = tuple(
+            tuple(
+                dict.fromkeys(
+                    entry_id
+                    for target in targets_selected[index]
+                    for entry_id in target.get("contextRefs", [])
+                )
+            )
+            for index, _text in enumerate(selected)
+        )
+        suggestion_selected = tuple(
+            context_line_suggestion(
+                snapshot.relative_path,
+                text,
+                yaml_path=(selected_paths[index] if index < len(selected_paths) else None),
+            )
+            for index, text in enumerate(selected)
+        )
+    else:
+        context_selected = (
+            snapshot.context_refs[offset : offset + count]
+            if snapshot.context_refs
+            else tuple(() for _item in selected)
+        )
+        suggestion_selected = (
+            snapshot.context_suggestions[offset : offset + count]
+            if snapshot.context_suggestions
+            else tuple(None for _item in selected)
+        )
+        targets_selected = (
+            snapshot.context_targets[offset : offset + count]
+            if snapshot.context_targets
+            else tuple(() for _item in selected)
+        )
     return {
         "edge": edge,
         "count": count,
@@ -1633,6 +1671,11 @@ def _replace_server_comparison(
     replacement = _build_replacement_workbench(current, source_value, target_value)
     snapshot, git_lookup, context_lookup = _build_web_diff_snapshot(replacement)
     page = _render_page(snapshot)
+    context_catalog = load_context_catalog(
+        replacement.settings.config_file,
+        replacement.settings.source,
+        replacement.settings.target,
+    )
 
     if persist:
         if replacement.settings.dry_run:
@@ -1648,6 +1691,8 @@ def _replace_server_comparison(
         server.workbench = replacement
         server.git_lookup = git_lookup
         server.context_lookup = context_lookup
+        server.context_catalog = context_catalog
+        server.context_revision += 1
         server.git_cache = {}
 
     return {
@@ -1660,11 +1705,23 @@ def _replace_server_comparison(
     }
 
 
+def _context_catalog_payload(
+    workbench: Workbench,
+    catalog: ContextCatalog,
+) -> dict[str, Any]:
+    """Return the browser-facing catalog metadata without rebuilding a diff."""
+    return {
+        **catalog.payload(),
+        "editable": not workbench.settings.dry_run,
+        "editFile": str(context_edit_path(workbench.settings.config_file)),
+    }
+
+
 def _save_server_context_entry(
     server: _ViewerServer,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Persist one local definition and rebuild the active browser snapshot."""
+    """Persist one local definition and refresh only the context catalog."""
     if server.workbench.settings.dry_run:
         raise WorkbenchError("Context definitions cannot be saved in dry-run mode.")
     raw_entry = payload.get("entry")
@@ -1675,20 +1732,119 @@ def _save_server_context_entry(
             server.workbench.settings.config_file,
             raw_entry,
         )
+        catalog = load_context_catalog(
+            server.workbench.settings.config_file,
+            server.workbench.settings.source,
+            server.workbench.settings.target,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         raise WorkbenchError(str(exc)) from exc
 
-    snapshot, git_lookup, context_lookup = _build_web_diff_snapshot(server.workbench)
-    page = _render_page(snapshot)
     with server.state_lock:
-        server.page = page
-        server.git_lookup = git_lookup
-        server.context_lookup = context_lookup
-        server.git_cache = {}
+        server.context_catalog = catalog
+        server.context_revision += 1
+        revision = server.context_revision
+
     return {
         "ok": True,
+        "entry": entry.payload(),
         "entryId": entry.id,
         "path": str(path),
+        "contextCatalog": _context_catalog_payload(server.workbench, catalog),
+        "contextRevision": revision,
+    }
+
+
+def _refresh_context_targets(
+    server: _ViewerServer,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-match one browser file against the current context catalog."""
+    relative_path = payload.get("path")
+    raw_items = payload.get("items")
+    if not isinstance(relative_path, str) or not relative_path.strip():
+        raise WorkbenchError("Context refresh requires a file path.")
+    if not isinstance(raw_items, list):
+        raise WorkbenchError("Context refresh requires a list of line items.")
+    if len(raw_items) > 50_000:
+        raise WorkbenchError("Context refresh contains too many line items.")
+
+    known_paths = {record.relative_path for record in server.workbench.records}
+    if relative_path not in known_paths:
+        raise WorkbenchError("The requested file is not part of the active comparison.")
+
+    with server.state_lock:
+        catalog = server.context_catalog
+        revision = server.context_revision
+
+    items: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise WorkbenchError("Context refresh line items must be objects.")
+        text = raw_item.get("text")
+        yaml_path = raw_item.get("yamlPath")
+        if not isinstance(text, str):
+            raise WorkbenchError("Context refresh line text must be a string.")
+        if yaml_path is not None and not isinstance(yaml_path, str):
+            raise WorkbenchError("Context refresh YAML paths must be strings or null.")
+        targets = catalog.line_targets(
+            relative_path,
+            text,
+            yaml_path=yaml_path,
+        )
+        refs = list(
+            dict.fromkeys(
+                entry_id for target in targets for entry_id in target.get("contextRefs", [])
+            )
+        )
+        suggestion = next(
+            (
+                target.get("contextSuggestion")
+                for target in targets
+                if not target.get("contextRefs") and target.get("contextSuggestion") is not None
+            ),
+            None,
+        )
+        items.append(
+            {
+                "contextTargets": targets,
+                "contextRefs": refs,
+                "contextSuggestion": suggestion
+                or context_line_suggestion(
+                    relative_path,
+                    text,
+                    yaml_path=yaml_path,
+                ),
+            }
+        )
+
+    path_parts = Path(relative_path).parts
+    return {
+        "ok": True,
+        "contextRevision": revision,
+        "items": items,
+        "contextRefs": catalog.match_path(relative_path),
+        "contextPath": {
+            "sourceEnvironment": context_path_part_payload(
+                catalog,
+                relative_path,
+                server.workbench.settings.source.name,
+            ),
+            "targetEnvironment": context_path_part_payload(
+                catalog,
+                relative_path,
+                server.workbench.settings.target.name,
+            ),
+            "parts": [
+                context_path_part_payload(
+                    catalog,
+                    relative_path,
+                    part,
+                    is_filename=index == len(path_parts) - 1,
+                )
+                for index, part in enumerate(path_parts)
+            ],
+        },
     }
 
 
@@ -2871,22 +3027,17 @@ const gapStateById = new Map();
 const hiddenFiles = new Set();
 const reviewedFiles = new Set();
 const reviewedAtByFile = new Map();
-const contextEntries = snapshot.contextCatalog?.entries ?? [];
-const contextById = new Map(contextEntries.map(entry => [entry.id, entry]));
-const contextCategories = [...new Set([
-  'Project Context',
-  ...contextEntries.map(entry => entry.category).filter(Boolean),
-])].sort((left, right) => {
-  if (left === 'Project Context') return -1;
-  if (right === 'Project Context') return 1;
-  return left.localeCompare(right);
-});
+let contextEntries = snapshot.contextCatalog?.entries ?? [];
+let contextById = new Map(contextEntries.map(entry => [entry.id, entry]));
+let contextCategories = [];
+let contextCatalogRevision = 0;
 const contextEditable = Boolean(snapshot.contextCatalog?.editable);
 const contextEditFilePath = snapshot.contextCatalog?.editFile ?? '.config-review-context.yaml';
 let selectedContextId = contextEntries[0]?.id ?? null;
 let contextTooltipTimer = null;
 let contextHelpMode = false;
 let editingContextEntry = null;
+for (const file of snapshot.files) file.contextRevision = 0;
 let browseInput = null;
 let browseAfterSelect = null;
 let browsePath = '';
@@ -2894,6 +3045,32 @@ let browseParent = '';
 const $ = id => document.getElementById(id);
 const systemTheme = window.matchMedia('(prefers-color-scheme: light)');
 const prefixFor = kind => kind.includes('remove') || kind === 'remove_note' ? '-' : kind.includes('add') || kind === 'add_note' ? '+' : kind === 'context' || kind === 'filtered_context' ? ' ' : '';
+
+function contextCategoryList(entries = contextEntries) {
+  return [...new Set([
+    'Project Context',
+    ...entries.map(entry => entry.category).filter(Boolean),
+  ])].sort((left, right) => {
+    if (left === 'Project Context') return -1;
+    if (right === 'Project Context') return 1;
+    return left.localeCompare(right);
+  });
+}
+
+contextCategories = contextCategoryList();
+
+function replaceContextCatalog(catalog) {
+  snapshot.contextCatalog = {
+    ...(snapshot.contextCatalog ?? {}),
+    ...(catalog ?? {}),
+  };
+  contextEntries = snapshot.contextCatalog.entries ?? [];
+  contextById = new Map(contextEntries.map(entry => [entry.id, entry]));
+  contextCategories = contextCategoryList();
+  if (!contextById.has(selectedContextId)) {
+    selectedContextId = contextEntries[0]?.id ?? null;
+  }
+}
 
 function comparisonSettings() {
   return snapshot.comparison ?? {
@@ -3394,9 +3571,6 @@ async function saveContextEntry() {
     $('contextEditorError').textContent = 'A match value is required.';
     return;
   }
-  if (notesDirty && !window.confirm('Saving this definition reloads the comparison and clears unsaved browser notes. Continue?')) {
-    return;
-  }
   const button = $('saveContextEntry');
   button.disabled = true;
   button.textContent = 'Saving…';
@@ -3411,10 +3585,18 @@ async function saveContextEntry() {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `Definition request failed (${response.status})`);
-    notesDirty = false;
-    window.location.reload();
+    replaceContextCatalog(payload.contextCatalog ?? {});
+    contextCatalogRevision = Number(payload.contextRevision ?? contextCatalogRevision + 1);
+    selectedContextId = payload.entryId ?? selectedContextId;
+    closeContextEditor();
+    await refreshFileContext(currentFile(), {force: true});
+    renderContextDictionary();
+    renderTree();
+    renderDiff();
+    setStatus(`Saved context definition: ${payload.entry?.title ?? entry.title}`, 'success');
   } catch (error) {
     $('contextEditorError').textContent = error.message;
+  } finally {
     button.disabled = false;
     button.textContent = 'Save definition';
   }
@@ -3892,6 +4074,65 @@ function currentFile() {
   return snapshot.files[selected] ?? null;
 }
 
+function fileContextLineGroups(file) {
+  const groups = [];
+  const byKey = new Map();
+  for (const viewName of ['focused', 'focusedExpanded', 'raw']) {
+    for (const line of file?.[viewName]?.lines ?? []) {
+      const key = JSON.stringify([line.text, line.yamlPath ?? null]);
+      let group = byKey.get(key);
+      if (!group) {
+        group = {
+          item: {text: line.text, yamlPath: line.yamlPath ?? null},
+          lines: [],
+        };
+        byKey.set(key, group);
+        groups.push(group);
+      }
+      group.lines.push(line);
+    }
+  }
+  return groups;
+}
+
+async function refreshFileContext(file, {force = false} = {}) {
+  if (!file) return;
+  if (!force && file.contextRevision === contextCatalogRevision) return;
+  if (file.contextRefreshPromise) return file.contextRefreshPromise;
+  const groups = fileContextLineGroups(file);
+  const promise = fetch('context-targets', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      path: file.path,
+      items: groups.map(group => group.item),
+    }),
+  }).then(async response => {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Context refresh failed (${response.status})`);
+    }
+    for (let index = 0; index < groups.length; index++) {
+      const match = payload.items?.[index] ?? {};
+      for (const line of groups[index].lines) {
+        line.contextTargets = match.contextTargets ?? [];
+        line.contextRefs = match.contextRefs ?? [];
+        line.contextSuggestion = match.contextSuggestion ?? null;
+      }
+    }
+    file.contextRefs = payload.contextRefs ?? [];
+    file.contextPath = payload.contextPath ?? file.contextPath;
+    file.contextRevision = Number(payload.contextRevision ?? contextCatalogRevision);
+    gapStateById.clear();
+  }).finally(() => {
+    delete file.contextRefreshPromise;
+  });
+  file.contextRefreshPromise = promise;
+  return promise;
+}
+
 function selectFile(file) {
   if (!file) return;
   const previousPath = currentFile()?.path ?? null;
@@ -3900,6 +4141,14 @@ function selectFile(file) {
     gapStateById.clear();
   }
   render();
+  refreshFileContext(file).then(() => {
+    if (currentFile()?.path === file.path) {
+      renderTree();
+      renderDiff();
+    }
+  }).catch(error => {
+    setStatus(`Could not refresh context help: ${error.message}`, 'error');
+  });
 }
 
 function activeFilesMatchingSearch() {
@@ -5140,6 +5389,8 @@ class _ViewerServer(ThreadingHTTPServer):
     workbench: Workbench
     git_lookup: GitLookup
     context_lookup: ContextLookup
+    context_catalog: ContextCatalog
+    context_revision: int
     git_cache: dict[str, bytes]
     git_cache_lock: threading.Lock
     state_lock: threading.Lock
@@ -5223,7 +5474,15 @@ class _ViewerHandler(BaseHTTPRequestHandler):
             if edge not in {"start", "end"}:
                 self.send_error(400)
                 return
-            self._send_json(200, _context_gap_payload(lookup, count=count, edge=edge))
+            self._send_json(
+                200,
+                _context_gap_payload(
+                    lookup,
+                    count=count,
+                    edge=edge,
+                    context_catalog=self.server.context_catalog,
+                ),
+            )
             return
 
         prefix = f"/{self.server.token}/git/"
@@ -5257,7 +5516,13 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         comparison_path = f"/{self.server.token}/comparison"
         preview_path = f"/{self.server.token}/comparison-preview"
         context_entry_path = f"/{self.server.token}/context-entry"
-        if parsed.path not in {comparison_path, preview_path, context_entry_path}:
+        context_targets_path = f"/{self.server.token}/context-targets"
+        if parsed.path not in {
+            comparison_path,
+            preview_path,
+            context_entry_path,
+            context_targets_path,
+        }:
             self.send_error(405)
             return
 
@@ -5266,7 +5531,7 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"error": "Invalid request length."})
             return
-        if length <= 0 or length > 131_072:
+        if length <= 0 or length > 2_097_152:
             self._send_json(400, {"error": "Invalid request."})
             return
         try:
@@ -5280,6 +5545,14 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         if parsed.path == context_entry_path:
             try:
                 result = _save_server_context_entry(self.server, payload)
+            except (OSError, WorkbenchError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, result)
+            return
+        if parsed.path == context_targets_path:
+            try:
+                result = _refresh_context_targets(self.server, payload)
             except (OSError, WorkbenchError) as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
@@ -5362,6 +5635,12 @@ class LocalWebDiffViewer:
         server.workbench = workbench
         server.git_lookup = git_lookup
         server.context_lookup = context_lookup
+        server.context_catalog = load_context_catalog(
+            workbench.settings.config_file,
+            workbench.settings.source,
+            workbench.settings.target,
+        )
+        server.context_revision = 0
         server.git_cache = {}
         server.git_cache_lock = threading.Lock()
         server.state_lock = threading.Lock()

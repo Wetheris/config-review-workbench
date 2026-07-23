@@ -42,9 +42,10 @@ as the default scope, and **Browse changed files…** can select another reposit
 The field also accepts broader glob patterns such as `**/values.yaml` or `ms/config/**`.
 
 The editor supports definitions for path segments, file names, exact YAML paths, YAML keys and
-values, environment variable names, commands, terms, and path patterns. Saving reloads the current browser snapshot
-so the new matching rule is immediately applied. Unsaved reviewer notes are protected by a
-confirmation prompt before that reload.
+values, environment variable names, commands, terms, and path patterns. Saving updates only the
+context catalog and re-matches the visible file in place. The diff snapshot, reviewer notes,
+reviewed state, and scroll position are preserved; a full comparison rebuild is not required.
+Other files are re-matched lazily when they are opened.
 
 Context editing is unavailable in dry-run mode. Privacy mode turns context help off because
 service names and architecture descriptions may themselves be sensitive in screenshots.

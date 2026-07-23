@@ -892,7 +892,7 @@ def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
     }
 
 
-def test_web_context_editor_saves_project_definition_and_refreshes_page(tmp_path: Path):
+def test_web_context_editor_saves_definition_without_rebuilding_page(tmp_path: Path):
     root = tmp_path / "project"
     source = root / "dev"
     target = root / "test"
@@ -904,6 +904,9 @@ def test_web_context_editor_saves_project_definition_and_refreshes_page(tmp_path
     viewer = LocalWebDiffViewer()
     try:
         launch = viewer.open(Workbench(_settings(root)), open_browser=False)
+        with urllib.request.urlopen(launch.url, timeout=2) as response:
+            original_page = response.read()
+
         request = urllib.request.Request(
             launch.url + "context-entry",
             data=json.dumps(
@@ -932,17 +935,41 @@ def test_web_context_editor_saves_project_definition_and_refreshes_page(tmp_path
             payload = json.load(response)
             assert payload["ok"] is True
             assert payload["entryId"] == "custom-setting"
+            assert payload["entry"]["title"] == "Custom setting"
             assert payload["path"] == str(root / ".config-review-context.yaml")
+            assert any(
+                entry["id"] == "custom-setting" for entry in payload["contextCatalog"]["entries"]
+            )
+            assert payload["contextRevision"] == 1
 
         context_file = root / ".config-review-context.yaml"
         assert context_file.is_file()
         assert "custom-setting" in context_file.read_text(encoding="utf-8")
 
         with urllib.request.urlopen(launch.url, timeout=2) as response:
-            page = response.read().decode("utf-8")
-            assert '"id":"custom-setting"' in page
-            assert '"contextRefs":["custom-setting"]' in page
-            assert 'id="contextEditorModal"' in page
-            assert "No context definition exists yet" in page
+            assert response.read() == original_page
+
+        refresh_request = urllib.request.Request(
+            launch.url + "context-targets",
+            data=json.dumps(
+                {
+                    "path": "values.yaml",
+                    "items": [{"text": "customSetting: dev", "yamlPath": "customSetting"}],
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(refresh_request, timeout=5) as response:
+            refresh_payload = json.load(response)
+            assert refresh_payload["ok"] is True
+            assert refresh_payload["contextRevision"] == 1
+            assert refresh_payload["items"][0]["contextRefs"] == ["custom-setting"]
+            target = next(
+                target
+                for target in refresh_payload["items"][0]["contextTargets"]
+                if target["text"] == "customSetting"
+            )
+            assert target["contextRefs"] == ["custom-setting"]
     finally:
         viewer.stop()
