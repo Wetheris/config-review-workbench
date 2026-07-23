@@ -1,11 +1,12 @@
-"""Local browser companion for reviewing DEV-to-TEST differences.
+"""Local browser companion for reviewing source-to-target differences.
 
 The viewer serves a snapshot generated from the workbench's existing Focused Diff
-and Full Diff presentations. It binds only to loopback, uses a random URL token,
-and never modifies DEV, TEST, Git, or workbench configuration. Git context is
-loaded only after a reviewer adds it to a change, while opt-in reviewer notes
-remain in the browser until the reviewer explicitly exports a plaintext review
-file.
+and Full Diff presentations. It binds only to loopback and uses a random URL
+token. Reviewers may switch the source and target directories from the browser;
+the selected paths are saved to the project configuration only when explicitly
+requested. Git context is loaded only after a reviewer adds it to a change,
+while opt-in reviewer notes remain in the browser until the reviewer explicitly
+exports a plaintext review file.
 """
 
 from __future__ import annotations
@@ -24,9 +25,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .context_help import ContextCatalog, load_context_catalog
 from .core import (
     ChangeBlock,
     DiffPresentation,
@@ -37,6 +40,7 @@ from .core import (
     _is_yaml_order_continuation,
     git_repository_commit_url,
     git_repository_merge_request_url,
+    save_project_paths,
 )
 from .rendering import full_unified_diff, review_unified_diff
 
@@ -64,6 +68,7 @@ class _ContextGapSnapshot:
     dev_start: int
     lines: tuple[str, ...]
     private_lines: tuple[str, ...] = ()
+    context_refs: tuple[tuple[str, ...], ...] = ()
 
 
 ContextLookup = dict[str, _ContextGapSnapshot]
@@ -338,6 +343,8 @@ def _open_browser_once(url: str) -> bool:
 def _display_lines_payload(
     lines: Sequence[DisplayLine],
     redactor: _PrivacyRedactor,
+    context_catalog: ContextCatalog,
+    relative_path: str,
 ) -> list[dict[str, Any]]:
     private_lines = redactor.redact_lines([line.text for line in lines])
     for index, line in enumerate(lines):
@@ -359,6 +366,7 @@ def _display_lines_payload(
             "testLine": line.test_line,
             "devLine": line.dev_line,
             "emphasisRanges": [list(item) for item in line.emphasis_ranges],
+            "contextRefs": context_catalog.match_line(relative_path, line.text),
         }
         for line, private_text in zip(lines, private_lines, strict=True)
     ]
@@ -422,6 +430,7 @@ def _change_payload(
     block: ChangeBlock,
     git_lookup: GitLookup,
     redactor: _PrivacyRedactor,
+    context_catalog: ContextCatalog,
     *,
     marker_index: int | None = None,
     panel_after: int | None = None,
@@ -450,6 +459,10 @@ def _change_payload(
         "newLines": list(block.new_lines),
         "privateOldLines": redactor.redact_lines(block.old_lines),
         "privateNewLines": redactor.redact_lines(block.new_lines),
+        "contextRefs": context_catalog.match_lines(
+            record.relative_path,
+            [*block.old_lines, *block.new_lines],
+        ),
         "hidden": hidden,
         "testRemoteUrl": (
             workbench.git_file_url(
@@ -497,6 +510,7 @@ def _presentation_payload(
     git_lookup: GitLookup,
     context_lookup: ContextLookup,
     redactor: _PrivacyRedactor,
+    context_catalog: ContextCatalog,
     *,
     physical_order_fallback: bool = False,
 ) -> dict[str, Any]:
@@ -514,6 +528,7 @@ def _presentation_payload(
             block,
             git_lookup,
             redactor,
+            context_catalog,
             marker_index=marker_index,
             panel_after=min(
                 len(presentation.lines),
@@ -533,18 +548,25 @@ def _presentation_payload(
             block,
             git_lookup,
             redactor,
+            context_catalog,
             hidden=True,
         )
         if payload["key"] in active_keys:
             continue
         hidden_changes.append(payload)
 
-    lines = _display_lines_payload(presentation.lines, redactor)
+    lines = _display_lines_payload(
+        presentation.lines,
+        redactor,
+        context_catalog,
+        record.relative_path,
+    )
     context_gaps = _timeline_context_gaps(
         record,
         lines,
         context_lookup,
         redactor,
+        context_catalog,
     )
 
     return {
@@ -616,6 +638,7 @@ def _timeline_context_gaps(
     lines: Sequence[dict[str, Any]],
     context_lookup: ContextLookup,
     redactor: _PrivacyRedactor,
+    context_catalog: ContextCatalog,
 ) -> list[dict[str, Any]]:
     """Find omitted aligned unchanged ranges in a physical web timeline."""
     test_lines = record.test_text.splitlines()
@@ -643,6 +666,10 @@ def _timeline_context_gaps(
                 dev_start=consumed_dev,
                 lines=values,
                 private_lines=tuple(redactor.redact_lines(values)),
+                context_refs=tuple(
+                    tuple(context_catalog.match_line(record.relative_path, value))
+                    for value in values
+                ),
             ),
         )
         leading = consumed_test == 0 and consumed_dev == 0
@@ -684,6 +711,7 @@ def _physical_semantic_presentation_payload(
     git_lookup: GitLookup,
     context_lookup: ContextLookup,
     redactor: _PrivacyRedactor,
+    context_catalog: ContextCatalog,
 ) -> dict[str, Any]:
     """Render semantic active changes on a monotonic physical file timeline.
 
@@ -700,6 +728,7 @@ def _physical_semantic_presentation_payload(
         git_lookup,
         context_lookup,
         redactor,
+        context_catalog,
         physical_order_fallback=True,
     )
 
@@ -746,6 +775,7 @@ def _physical_semantic_presentation_payload(
             block,
             git_lookup,
             redactor,
+            context_catalog,
             marker_index=header_index,
             panel_after=len(output),
             hidden=True,
@@ -879,6 +909,7 @@ def _physical_semantic_presentation_payload(
             block,
             git_lookup,
             redactor,
+            context_catalog,
             marker_index=int(marker_index),
             panel_after=int(panel_after),
         )
@@ -890,6 +921,7 @@ def _physical_semantic_presentation_payload(
         output,
         context_lookup,
         redactor,
+        context_catalog,
     )
     return {
         "lines": output,
@@ -916,6 +948,11 @@ def _build_web_diff_snapshot(
     git_lookup: GitLookup = {}
     context_lookup: ContextLookup = {}
     redactor = _PrivacyRedactor()
+    context_catalog = load_context_catalog(
+        workbench.settings.config_file,
+        workbench.settings.source,
+        workbench.settings.target,
+    )
     for record in workbench.records:
         workbench.refresh_record(record)
         full = full_unified_diff(record, workbench.settings.context, selected_change=0)
@@ -980,6 +1017,7 @@ def _build_web_diff_snapshot(
                 git_lookup,
                 context_lookup,
                 redactor,
+                context_catalog,
             )
             focused_expanded_payload = _physical_semantic_presentation_payload(
                 workbench,
@@ -989,6 +1027,7 @@ def _build_web_diff_snapshot(
                 git_lookup,
                 context_lookup,
                 redactor,
+                context_catalog,
             )
         else:
             focused_payload = _presentation_payload(
@@ -998,6 +1037,7 @@ def _build_web_diff_snapshot(
                 git_lookup,
                 context_lookup,
                 redactor,
+                context_catalog,
             )
             focused_expanded_payload = _presentation_payload(
                 workbench,
@@ -1006,6 +1046,7 @@ def _build_web_diff_snapshot(
                 git_lookup,
                 context_lookup,
                 redactor,
+                context_catalog,
             )
         files.append(
             {
@@ -1013,6 +1054,7 @@ def _build_web_diff_snapshot(
                 "privatePath": redactor.redact_path(record.relative_path),
                 "status": status,
                 "states": list(record.states),
+                "contextRefs": context_catalog.match_path(record.relative_path),
                 "focused": focused_payload,
                 "focusedExpanded": focused_expanded_payload,
                 "raw": _presentation_payload(
@@ -1022,6 +1064,7 @@ def _build_web_diff_snapshot(
                     git_lookup,
                     context_lookup,
                     redactor,
+                    context_catalog,
                 ),
                 "counts": {
                     "active": counts.active,
@@ -1044,6 +1087,13 @@ def _build_web_diff_snapshot(
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": str(workbench.settings.source),
         "target": str(workbench.settings.target),
+        "comparison": {
+            "source": str(workbench.settings.source),
+            "target": str(workbench.settings.target),
+            "launchDirectory": str(Path.cwd().resolve()),
+            "configFile": str(workbench.settings.config_file),
+            "canPersist": not workbench.settings.dry_run,
+        },
         "privateSource": "[DEV ROOT]",
         "privateTarget": "[TEST ROOT]",
         "gitStatus": workbench.git_status.summary,
@@ -1055,6 +1105,7 @@ def _build_web_diff_snapshot(
             "commit": workbench.git_link_commit,
             "status": workbench.git_link_status_text,
         },
+        "contextCatalog": context_catalog.payload(),
         "files": files,
     }
     return snapshot, git_lookup, context_lookup
@@ -1152,6 +1203,11 @@ def _context_gap_payload(
         if snapshot.private_lines
         else tuple(selected)
     )
+    context_selected = (
+        snapshot.context_refs[offset : offset + count]
+        if snapshot.context_refs
+        else tuple(() for _item in selected)
+    )
     return {
         "edge": edge,
         "count": count,
@@ -1165,9 +1221,154 @@ def _context_gap_payload(
                 "privateText": private_selected[index],
                 "kind": "context",
                 "emphasisRanges": [],
+                "contextRefs": list(context_selected[index]),
             }
             for index, text in enumerate(selected)
         ],
+    }
+
+
+def _resolve_browser_directory(value: str) -> Path:
+    """Resolve one browser-supplied directory without requiring shell expansion."""
+    cleaned = value.strip().strip('"').strip("'")
+    if not cleaned:
+        raise WorkbenchError("Choose both a source directory and a target directory.")
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+    candidate = Path(expanded)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError as exc:
+        raise WorkbenchError(f"Could not resolve directory {cleaned!r}: {exc}") from exc
+    if not resolved.is_dir():
+        raise WorkbenchError(f"Directory does not exist: {resolved}")
+    return resolved
+
+
+def _directory_listing_payload(workbench: Workbench, requested: str | None) -> dict[str, Any]:
+    """Return a small local-only directory listing for the comparison picker."""
+    if requested:
+        current = _resolve_browser_directory(requested)
+    else:
+        try:
+            common = Path(
+                os.path.commonpath(
+                    [
+                        str(workbench.settings.source.resolve()),
+                        str(workbench.settings.target.resolve()),
+                    ]
+                )
+            )
+        except ValueError:
+            common = workbench.settings.source.parent
+        current = common if common.is_dir() else Path.cwd().resolve()
+
+    directories: list[dict[str, str]] = []
+    truncated = False
+    try:
+        children = sorted(
+            (item for item in current.iterdir() if item.is_dir()),
+            key=lambda item: item.name.casefold(),
+        )
+        if len(children) > 500:
+            children = children[:500]
+            truncated = True
+        directories = [{"name": item.name, "path": str(item.resolve())} for item in children]
+    except OSError as exc:
+        raise WorkbenchError(f"Could not list directory {current}: {exc}") from exc
+
+    parent = current.parent if current.parent != current else current
+    shortcuts: list[dict[str, str]] = []
+    seen: set[Path] = set()
+    for label, candidate in (
+        ("Current comparison", workbench.settings.source.parent),
+        ("Launch directory", Path.cwd()),
+        ("Home", Path.home()),
+        ("Filesystem root", Path(current.anchor or "/")),
+    ):
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        shortcuts.append({"label": label, "path": str(resolved)})
+
+    return {
+        "path": str(current),
+        "parent": str(parent),
+        "directories": directories,
+        "shortcuts": shortcuts,
+        "truncated": truncated,
+    }
+
+
+def _build_replacement_workbench(
+    current: Workbench,
+    source_value: str,
+    target_value: str,
+) -> Workbench:
+    """Create a fresh workbench using browser-selected source and target roots."""
+    source = _resolve_browser_directory(source_value)
+    target = _resolve_browser_directory(target_value)
+    if source == target:
+        raise WorkbenchError("Source and target must be different directories.")
+
+    settings_type = type(current.settings)
+    settings = settings_type(
+        source=source,
+        target=target,
+        config_file=current.settings.config_file,
+        context=current.settings.context,
+        include_secrets=current.settings.include_secrets,
+        edit_command=current.settings.edit_command,
+        vimdiff_command=current.settings.vimdiff_command,
+        dry_run=current.settings.dry_run,
+    )
+    # Imported lazily so web_view remains usable from the workbench's UI modules
+    # without creating an import cycle at module import time.
+    from .workbench import Workbench as WorkbenchImplementation
+
+    return WorkbenchImplementation(settings)
+
+
+def _replace_server_comparison(
+    server: _ViewerServer,
+    *,
+    source_value: str,
+    target_value: str,
+    persist: bool,
+) -> dict[str, Any]:
+    """Build and atomically install a new comparison on the existing server."""
+    current = server.workbench
+    replacement = _build_replacement_workbench(current, source_value, target_value)
+    snapshot, git_lookup, context_lookup = _build_web_diff_snapshot(replacement)
+    page = _render_page(snapshot)
+
+    if persist:
+        if replacement.settings.dry_run:
+            raise WorkbenchError("Cannot save comparison paths while dry-run mode is enabled.")
+        save_project_paths(
+            replacement.settings.config_file,
+            replacement.settings.source,
+            replacement.settings.target,
+        )
+
+    with server.state_lock:
+        server.page = page
+        server.workbench = replacement
+        server.git_lookup = git_lookup
+        server.context_lookup = context_lookup
+        server.git_cache = {}
+
+    return {
+        "ok": True,
+        "source": str(replacement.settings.source),
+        "target": str(replacement.settings.target),
+        "fileCount": len(snapshot["files"]),
+        "persisted": persist,
     }
 
 
@@ -1183,6 +1384,7 @@ def _render_page(snapshot: dict[str, Any]) -> bytes:
             "status": "Git links unavailable",
         },
     )
+    snapshot.setdefault("contextCatalog", {"entries": [], "diagnostics": []})
     encoded = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     # Prevent configuration text containing </script> from ending the data block.
     encoded = encoded.replace("</", r"<\/")
@@ -1343,7 +1545,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.controls { display: flex; gap: 6px; align-items: center; }
+.controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .controls button, .view-menu summary, .view-menu button {
   border: 1px solid var(--border);
   background: var(--panel2);
@@ -1460,6 +1662,54 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .ln a::after { content: ' ↗'; font-size: 9px; opacity: .65; }
 .prefix { padding: 1px 6px; text-align: center; color: var(--muted); user-select: none; }
 .code { padding: 1px 10px; white-space: pre; }
+.context-help-button {
+  width: 32px;
+  min-width: 32px;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  font-weight: 800;
+  font-size: 16px;
+}
+.context-help-button.active {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
+}
+.context-available { position: relative; }
+.context-help-mode .context-available { cursor: help; }
+.context-help-mode .line .code.context-available:hover,
+.context-help-mode .line .code.context-available:focus-visible,
+.context-help-mode .path.context-available:hover,
+.context-help-mode .path.context-available:focus-visible {
+  outline: 1px dotted var(--accent);
+  outline-offset: -2px;
+  background: var(--accentbg);
+}
+.context-tooltip[hidden] { display: none; }
+.context-tooltip {
+  position: fixed;
+  z-index: 130;
+  width: min(390px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 14px 38px #0008;
+  white-space: normal;
+  font: 12px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+}
+.context-tooltip-entry + .context-tooltip-entry {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+.context-tooltip-title { font-weight: 800; color: var(--accent); }
+.context-tooltip-category { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.context-tooltip-summary { margin-top: 4px; }
+.context-tooltip-hint { margin-top: 8px; color: var(--muted); font-size: 10px; }
 .intraline {
   font-weight: 800;
   border-radius: 2px;
@@ -1616,12 +1866,203 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .footer.success { color: var(--add); }
 .footer.error { color: var(--del); }
 .footer.busy { color: var(--accent); }
+.modal-backdrop[hidden] { display: none; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #0009;
+}
+.modal-dialog {
+  width: min(780px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  max-height: min(760px, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 24px 70px #0008;
+}
+.modal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+}
+.modal-heading h2 { margin: 0; font-size: 16px; }
+.modal-close {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+.modal-body { min-height: 0; overflow: auto; padding: 16px; }
+.comparison-help { margin: 0 0 14px; color: var(--muted); }
+.comparison-grid { display: grid; gap: 12px; }
+.comparison-field label { display: block; margin-bottom: 5px; font-weight: 700; }
+.path-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.path-entry input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.path-entry button, .comparison-actions button, .folder-toolbar button, .shortcut-button,
+.folder-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: var(--panel2);
+  color: var(--text);
+  cursor: pointer;
+}
+.path-entry button:hover, .comparison-actions button:hover, .folder-toolbar button:hover,
+.shortcut-button:hover, .folder-row:hover { border-color: var(--muted); }
+.comparison-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.persist-option { display: inline-flex; gap: 7px; align-items: center; color: var(--muted); }
+.comparison-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 16px; }
+.comparison-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.comparison-error {
+  min-height: 20px;
+  margin-top: 10px;
+  color: var(--del);
+  white-space: pre-wrap;
+}
+.folder-browser[hidden] { display: none; }
+.folder-browser {
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.folder-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+}
+.folder-location {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.folder-shortcuts { display: flex; gap: 6px; flex-wrap: wrap; padding: 9px; border-bottom: 1px solid var(--border); }
+.shortcut-button { padding: 4px 7px; font-size: 11px; }
+.folder-list { max-height: 270px; overflow: auto; padding: 7px; }
+.folder-row { display: block; width: 100%; margin-bottom: 5px; text-align: left; }
+.folder-row::before { content: "📁 "; }
+.folder-empty { padding: 20px; text-align: center; color: var(--muted); }
+.folder-truncated { padding: 6px 9px; color: var(--muted); font-size: 11px; }
+.dictionary-dialog { width: min(1040px, 100%); }
+.dictionary-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.dictionary-toolbar input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.dictionary-count { color: var(--muted); white-space: nowrap; font-size: 12px; }
+.dictionary-diagnostics {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--note);
+  border-radius: 6px;
+  background: var(--notebg);
+  color: var(--note);
+  white-space: pre-wrap;
+}
+.dictionary-diagnostics:empty { display: none; }
+.dictionary-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, .85fr) minmax(360px, 1.4fr);
+  min-height: 430px;
+  max-height: min(620px, calc(100vh - 210px));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.dictionary-list { min-height: 0; overflow: auto; padding: 7px; border-right: 1px solid var(--border); }
+.dictionary-category {
+  padding: 8px 7px 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.dictionary-item {
+  display: block;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.dictionary-item:hover { background: var(--hover); }
+.dictionary-item.active { background: var(--accentbg); color: var(--accent); }
+.dictionary-item-title { display: block; font-weight: 700; }
+.dictionary-item-summary {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dictionary-details { min-height: 0; overflow: auto; padding: 18px; }
+.dictionary-details h3 { margin: 0 0 4px; font-size: 20px; }
+.dictionary-detail-category { color: var(--accent); font-weight: 700; }
+.dictionary-detail-summary { margin: 14px 0; font-size: 14px; }
+.dictionary-detail-more { color: var(--muted); white-space: pre-wrap; }
+.dictionary-aliases { margin-top: 16px; color: var(--muted); font-size: 12px; }
+.dictionary-source { margin-top: 12px; color: var(--muted); font-size: 11px; }
+.dictionary-empty { padding: 32px; text-align: center; color: var(--muted); }
 @media (max-width: 800px) {
   .app { grid-template-columns: 240px minmax(0, 1fr); }
   .line { grid-template-columns: 46px 46px 20px minmax(max-content, 1fr); }
   .view-menu-panel { right: -4px; }
   .review-panel { margin-left: 115px; }
   .context-grid { grid-template-columns: 1fr; }
+  .modal-backdrop { padding: 8px; }
+  .path-entry { grid-template-columns: 1fr; }
+  .dictionary-layout { grid-template-columns: 1fr; max-height: calc(100vh - 185px); }
+  .dictionary-list { max-height: 250px; border-right: 0; border-bottom: 1px solid var(--border); }
 }
 @media print {
   body { overflow: visible; background: #fff; color: #000; }
@@ -1645,6 +2086,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <button id="next" title="Next file (])">File →</button>
         <button id="focused" class="active">Focused</button>
         <button id="raw">Raw</button>
+        <button id="changeComparison" type="button" title="Choose different source and target directories">Change comparison…</button>
+        <button id="contextHelp" class="context-help-button" type="button" aria-pressed="false" title="Turn context help on">?</button>
         <button id="hideFile" title="Temporarily remove this file from the active tree">Hide file</button>
         <button id="reviewFile" title="Mark this file reviewed for the temporary review report">Mark reviewed</button>
         <button id="saveReview" title="Save all current-view changes and reviewer notes as plaintext">Save review…</button>
@@ -1695,6 +2138,75 @@ button, input, select, textarea { font: inherit; color: inherit; }
     <div id="footer" class="footer"></div>
   </main>
 </div>
+<div id="comparisonModal" class="modal-backdrop" hidden>
+  <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="comparisonTitle">
+    <div class="modal-heading">
+      <h2 id="comparisonTitle">Change comparison</h2>
+      <button id="closeComparison" class="modal-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="comparison-help">Choose the incoming/source directory and current/target directory. Applying a new comparison reloads this browser view and clears temporary notes, hidden files, and reviewed-file state.</p>
+      <div class="comparison-grid">
+        <div class="comparison-field">
+          <label for="sourceDirectory">Incoming / source directory</label>
+          <div class="path-entry">
+            <input id="sourceDirectory" type="text" spellcheck="false" autocomplete="off">
+            <button id="browseSource" type="button">Browse…</button>
+          </div>
+        </div>
+        <div class="comparison-field">
+          <label for="targetDirectory">Current / target directory</label>
+          <div class="path-entry">
+            <input id="targetDirectory" type="text" spellcheck="false" autocomplete="off">
+            <button id="browseTarget" type="button">Browse…</button>
+          </div>
+        </div>
+      </div>
+      <div class="comparison-options">
+        <button id="swapComparison" type="button">Swap source and target</button>
+        <label class="persist-option">
+          <input id="persistComparison" type="checkbox">
+          Save these paths as the project default
+        </label>
+      </div>
+      <div id="folderBrowser" class="folder-browser" hidden>
+        <div class="folder-toolbar">
+          <button id="folderUp" type="button">↑ Up</button>
+          <div id="folderLocation" class="folder-location"></div>
+          <button id="useFolder" type="button">Use this folder</button>
+        </div>
+        <div id="folderShortcuts" class="folder-shortcuts"></div>
+        <div id="folderList" class="folder-list"></div>
+        <div id="folderTruncated" class="folder-truncated" hidden>Only the first 500 folders are shown.</div>
+      </div>
+      <div id="comparisonError" class="comparison-error" role="alert"></div>
+      <div class="comparison-actions">
+        <button id="cancelComparison" type="button">Cancel</button>
+        <button id="applyComparison" class="primary" type="button">Compare directories</button>
+      </div>
+    </div>
+  </section>
+</div>
+<div id="contextModal" class="modal-backdrop" hidden>
+  <section class="modal-dialog dictionary-dialog" role="dialog" aria-modal="true" aria-labelledby="contextTitle">
+    <div class="modal-heading">
+      <h2 id="contextTitle">Context dictionary</h2>
+      <button id="closeContext" class="modal-close" type="button" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="dictionary-toolbar">
+        <input id="contextSearch" type="search" placeholder="Search services, Helm, GitLab, GitOps, acronyms…" autocomplete="off">
+        <span id="contextCount" class="dictionary-count"></span>
+      </div>
+      <div id="contextDiagnostics" class="dictionary-diagnostics"></div>
+      <div class="dictionary-layout">
+        <div id="contextList" class="dictionary-list"></div>
+        <article id="contextDetails" class="dictionary-details"></article>
+      </div>
+    </div>
+  </section>
+</div>
+<div id="contextTooltip" class="context-tooltip" role="tooltip" hidden></div>
 <pre id="printReport" class="print-report"></pre>
 <script id="snapshot" type="application/json">__SNAPSHOT__</script>
 <script>
@@ -1714,9 +2226,379 @@ const gapStateById = new Map();
 const hiddenFiles = new Set();
 const reviewedFiles = new Set();
 const reviewedAtByFile = new Map();
+const contextEntries = snapshot.contextCatalog?.entries ?? [];
+const contextById = new Map(contextEntries.map(entry => [entry.id, entry]));
+let selectedContextId = contextEntries[0]?.id ?? null;
+let contextTooltipTimer = null;
+let contextHelpMode = false;
+let browseInput = null;
+let browsePath = '';
+let browseParent = '';
 const $ = id => document.getElementById(id);
 const systemTheme = window.matchMedia('(prefers-color-scheme: light)');
 const prefixFor = kind => kind.includes('remove') || kind === 'remove_note' ? '-' : kind.includes('add') || kind === 'add_note' ? '+' : kind === 'context' || kind === 'filtered_context' ? ' ' : '';
+
+function comparisonSettings() {
+  return snapshot.comparison ?? {
+    source: snapshot.source,
+    target: snapshot.target,
+    launchDirectory: '',
+    configFile: '',
+    canPersist: true,
+  };
+}
+
+function openComparisonModal() {
+  const comparison = comparisonSettings();
+  $('sourceDirectory').value = comparison.source ?? snapshot.source ?? '';
+  $('targetDirectory').value = comparison.target ?? snapshot.target ?? '';
+  $('persistComparison').checked = false;
+  $('persistComparison').disabled = !comparison.canPersist;
+  $('persistComparison').closest('label').title = comparison.canPersist
+    ? `Optionally save to ${comparison.configFile}`
+    : 'Unavailable while the workbench is running in dry-run mode';
+  $('comparisonError').textContent = '';
+  $('folderBrowser').hidden = true;
+  $('comparisonModal').hidden = false;
+  $('sourceDirectory').focus();
+  $('sourceDirectory').select();
+}
+
+function closeComparisonModal() {
+  $('comparisonModal').hidden = true;
+  $('folderBrowser').hidden = true;
+  browseInput = null;
+}
+
+function contextMatches(ids = []) {
+  return ids.map(id => contextById.get(id)).filter(Boolean);
+}
+
+function selectContextEntry(entryId) {
+  if (!contextById.has(entryId)) return;
+  selectedContextId = entryId;
+  renderContextDictionary();
+}
+
+function renderContextDetails(entry) {
+  const host = $('contextDetails');
+  host.replaceChildren();
+  if (!entry) {
+    const empty = document.createElement('div');
+    empty.className = 'dictionary-empty';
+    empty.textContent = 'No matching dictionary entries.';
+    host.append(empty);
+    return;
+  }
+  const title = document.createElement('h3');
+  title.textContent = entry.title;
+  const category = document.createElement('div');
+  category.className = 'dictionary-detail-category';
+  category.textContent = entry.category;
+  const summary = document.createElement('p');
+  summary.className = 'dictionary-detail-summary';
+  summary.textContent = entry.summary;
+  host.append(title, category, summary);
+  if (entry.details) {
+    const details = document.createElement('div');
+    details.className = 'dictionary-detail-more';
+    details.textContent = entry.details;
+    host.append(details);
+  }
+  if (entry.aliases?.length) {
+    const aliases = document.createElement('div');
+    aliases.className = 'dictionary-aliases';
+    aliases.textContent = `Also recognized as: ${entry.aliases.join(', ')}`;
+    host.append(aliases);
+  }
+  const source = document.createElement('div');
+  source.className = 'dictionary-source';
+  source.textContent = entry.source === 'built-in'
+    ? 'Source: built-in Config Review context catalog'
+    : `Source: ${entry.source}`;
+  host.append(source);
+}
+
+function filteredContextEntries() {
+  const query = $('contextSearch').value.trim().toLowerCase();
+  if (!query) return contextEntries.slice();
+  return contextEntries.filter(entry => {
+    const searchText = [
+      entry.title,
+      entry.category,
+      entry.summary,
+      entry.details,
+      ...(entry.aliases ?? []),
+    ].join('\n').toLowerCase();
+    return searchText.includes(query);
+  });
+}
+
+function renderContextDictionary() {
+  const entries = filteredContextEntries();
+  $('contextCount').textContent = `${entries.length} of ${contextEntries.length}`;
+  $('contextDiagnostics').textContent = (snapshot.contextCatalog?.diagnostics ?? []).join('\n');
+  if (!entries.some(entry => entry.id === selectedContextId)) {
+    selectedContextId = entries[0]?.id ?? null;
+  }
+  const host = $('contextList');
+  host.replaceChildren();
+  let previousCategory = null;
+  for (const entry of entries) {
+    if (entry.category !== previousCategory) {
+      previousCategory = entry.category;
+      const label = document.createElement('div');
+      label.className = 'dictionary-category';
+      label.textContent = entry.category;
+      host.append(label);
+    }
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'dictionary-item' + (entry.id === selectedContextId ? ' active' : '');
+    button.onclick = () => selectContextEntry(entry.id);
+    const title = document.createElement('span');
+    title.className = 'dictionary-item-title';
+    title.textContent = entry.title;
+    const summary = document.createElement('span');
+    summary.className = 'dictionary-item-summary';
+    summary.textContent = entry.summary;
+    button.append(title, summary);
+    host.append(button);
+  }
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'dictionary-empty';
+    empty.textContent = 'No dictionary entries match this search.';
+    host.append(empty);
+  }
+  renderContextDetails(contextById.get(selectedContextId));
+}
+
+function openContextModal(entryId = null) {
+  if (entryId && contextById.has(entryId)) selectedContextId = entryId;
+  $('contextSearch').value = '';
+  renderContextDictionary();
+  $('contextModal').hidden = false;
+  if (entryId) {
+    $('contextList').querySelector('.dictionary-item.active')?.scrollIntoView({block: 'nearest'});
+  } else {
+    $('contextSearch').focus();
+  }
+}
+
+function closeContextModal() {
+  $('contextModal').hidden = true;
+}
+
+function hideContextTooltip() {
+  if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
+  contextTooltipTimer = null;
+  $('contextTooltip').hidden = true;
+}
+
+function scheduleContextTooltipHide() {
+  if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
+  contextTooltipTimer = window.setTimeout(hideContextTooltip, 140);
+}
+
+function positionContextTooltip(anchor) {
+  const tooltip = $('contextTooltip');
+  const rect = anchor.getBoundingClientRect();
+  const gap = 8;
+  tooltip.style.left = `${Math.max(12, Math.min(window.innerWidth - tooltip.offsetWidth - 12, rect.left))}px`;
+  const below = rect.bottom + gap;
+  const above = rect.top - tooltip.offsetHeight - gap;
+  tooltip.style.top = `${below + tooltip.offsetHeight <= window.innerHeight - 12 ? below : Math.max(12, above)}px`;
+}
+
+function showContextTooltip(anchor, ids) {
+  if (privacyMode) return;
+  if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
+  const entries = contextMatches(ids);
+  if (!entries.length) return;
+  const tooltip = $('contextTooltip');
+  tooltip.replaceChildren();
+  for (const entry of entries) {
+    const section = document.createElement('section');
+    section.className = 'context-tooltip-entry';
+    const title = document.createElement('div');
+    title.className = 'context-tooltip-title';
+    title.textContent = entry.title;
+    const category = document.createElement('div');
+    category.className = 'context-tooltip-category';
+    category.textContent = entry.category;
+    const summary = document.createElement('div');
+    summary.className = 'context-tooltip-summary';
+    summary.textContent = entry.summary;
+    section.append(title, category, summary);
+    tooltip.append(section);
+  }
+  const hint = document.createElement('div');
+  hint.className = 'context-tooltip-hint';
+  hint.textContent = 'Click this item to open the full dictionary entry.';
+  tooltip.append(hint);
+  tooltip.hidden = false;
+  positionContextTooltip(anchor);
+}
+
+function contextIds(ids = []) {
+  return ids.filter(id => contextById.has(id));
+}
+
+function decorateContextTarget(element, ids) {
+  const available = contextIds(ids);
+  if (!available.length) return;
+  element.classList.add('context-available');
+  element.tabIndex = contextHelpMode ? 0 : -1;
+  element.addEventListener('mouseenter', () => {
+    if (contextHelpMode) showContextTooltip(element, available);
+  });
+  element.addEventListener('mouseleave', scheduleContextTooltipHide);
+  element.addEventListener('focus', () => {
+    if (contextHelpMode) showContextTooltip(element, available);
+  });
+  element.addEventListener('blur', scheduleContextTooltipHide);
+  element.addEventListener('click', event => {
+    if (!contextHelpMode) return;
+    event.stopPropagation();
+    hideContextTooltip();
+    openContextModal(available[0]);
+  });
+}
+
+function applyContextHelpMode() {
+  const button = $('contextHelp');
+  const enabled = contextHelpMode && !privacyMode;
+  document.body.classList.toggle('context-help-mode', enabled);
+  button.classList.toggle('active', enabled);
+  button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+  button.textContent = '?';
+  button.title = privacyMode
+    ? 'Context help is unavailable while privacy mode is active'
+    : enabled
+      ? 'Turn context help off'
+      : 'Turn context help on';
+  button.disabled = privacyMode;
+  document.querySelectorAll('.context-available').forEach(element => {
+    element.tabIndex = enabled ? 0 : -1;
+  });
+  if (!enabled) hideContextTooltip();
+}
+
+function toggleContextHelpMode() {
+  if (privacyMode) return;
+  contextHelpMode = !contextHelpMode;
+  applyContextHelpMode();
+  setStatus(
+    contextHelpMode
+      ? 'CONTEXT HELP ON · hover highlighted configuration lines for definitions · click for full details'
+      : defaultStatus(),
+    contextHelpMode ? 'busy' : '',
+  );
+}
+
+async function loadDirectory(path = '') {
+  const host = $('folderList');
+  host.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'folder-empty';
+  loading.textContent = 'Loading folders…';
+  host.append(loading);
+  $('comparisonError').textContent = '';
+  try {
+    const query = path ? `?path=${encodeURIComponent(path)}` : '';
+    const response = await fetch(`directories${query}`, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json'},
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Directory request failed (${response.status})`);
+    browsePath = payload.path;
+    browseParent = payload.parent;
+    $('folderLocation').textContent = payload.path;
+    $('folderLocation').title = payload.path;
+    $('folderUp').disabled = payload.parent === payload.path;
+    $('folderTruncated').hidden = !payload.truncated;
+
+    const shortcutHost = $('folderShortcuts');
+    shortcutHost.replaceChildren();
+    for (const shortcut of payload.shortcuts ?? []) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'shortcut-button';
+      button.textContent = shortcut.label;
+      button.title = shortcut.path;
+      button.onclick = () => loadDirectory(shortcut.path);
+      shortcutHost.append(button);
+    }
+
+    host.replaceChildren();
+    for (const directory of payload.directories ?? []) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'folder-row';
+      button.textContent = directory.name;
+      button.title = directory.path;
+      button.onclick = () => loadDirectory(directory.path);
+      host.append(button);
+    }
+    if (!host.childElementCount) {
+      const empty = document.createElement('div');
+      empty.className = 'folder-empty';
+      empty.textContent = 'No child folders.';
+      host.append(empty);
+    }
+  } catch (error) {
+    host.replaceChildren();
+    const failed = document.createElement('div');
+    failed.className = 'folder-empty';
+    failed.textContent = error.message;
+    host.append(failed);
+  }
+}
+
+function browseFor(input) {
+  browseInput = input;
+  $('folderBrowser').hidden = false;
+  loadDirectory(input.value.trim());
+}
+
+async function applyComparison() {
+  const source = $('sourceDirectory').value.trim();
+  const target = $('targetDirectory').value.trim();
+  if (!source || !target) {
+    $('comparisonError').textContent = 'Choose both a source directory and a target directory.';
+    return;
+  }
+  if (notesDirty && !window.confirm('Changing comparisons clears unsaved browser notes and temporary review state. Continue?')) return;
+
+  const button = $('applyComparison');
+  button.disabled = true;
+  button.textContent = 'Building comparison…';
+  $('comparisonError').textContent = '';
+  try {
+    const response = await fetch('comparison', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: {'Accept': 'application/json', 'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        source,
+        target,
+        persist: $('persistComparison').checked,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `Comparison request failed (${response.status})`);
+    notesDirty = false;
+    window.location.reload();
+  } catch (error) {
+    $('comparisonError').textContent = error.message;
+    button.disabled = false;
+    button.textContent = 'Compare directories';
+  }
+}
 
 function applyTheme() {
   const resolved = themeChoice === 'system' ? (systemTheme.matches ? 'light' : 'dark') : themeChoice;
@@ -1739,6 +2621,9 @@ function setStatus(message, kind = '') {
 function defaultStatus() {
   if (privacyMode) {
     return 'PRIVACY MODE · display and exports are redacted · original values remain inside this local page';
+  }
+  if (contextHelpMode) {
+    return 'CONTEXT HELP ON · hover highlighted configuration lines for definitions · click for full details';
   }
   return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · ${snapshot.gitLinks.status} · review state is temporary until exported`;
 }
@@ -1819,6 +2704,7 @@ function lineElement(line) {
     displayLineText(line),
     privacyMode ? [] : (line.emphasisRanges ?? []),
   );
+  if (!privacyMode) decorateContextTarget(code, line.contextRefs ?? []);
   row.append(tl, dl, prefix, code);
   return row;
 }
@@ -2408,7 +3294,13 @@ function renderDiff() {
   const summaryView = mode === 'focused' ? file.focused : file.raw;
   const stateSuffix = [reviewedFiles.has(file.path) ? 'REVIEWED' : '', hiddenFiles.has(file.path) ? 'HIDDEN' : ''].filter(Boolean).join(' · ');
   const shownPath = displayFilePath(file);
-  $('path').textContent = stateSuffix ? `${shownPath} · ${stateSuffix}` : shownPath;
+  const pathHost = $('path');
+  pathHost.classList.remove('context-available');
+  pathHost.removeAttribute('tabindex');
+  pathHost.replaceWith(pathHost.cloneNode(false));
+  const currentPathHost = $('path');
+  currentPathHost.textContent = stateSuffix ? `${shownPath} · ${stateSuffix}` : shownPath;
+  if (!privacyMode) decorateContextTarget(currentPathHost, file.contextRefs ?? []);
   $('focused').classList.toggle('active', mode === 'focused');
   $('raw').classList.toggle('active', mode === 'raw');
   const hidden = summaryView.noiseHidden + summaryView.whitespaceHidden + summaryView.orderHidden;
@@ -2431,6 +3323,7 @@ function renderDiff() {
   if (mode === 'focused') appendFocusedLines(host, view);
   else appendRawLines(host, view);
   renderOpenGitContexts(view);
+  applyContextHelpMode();
   host.scrollTop = 0;
   host.scrollLeft = 0;
 }
@@ -2835,6 +3728,11 @@ async function printReviewedReport() {
 
 function applyPrivacyMode() {
   const button = $('privacyToggle');
+  hideContextTooltip();
+  if (privacyMode) {
+    contextHelpMode = false;
+    closeContextModal();
+  }
   button.classList.toggle('active', privacyMode);
   button.setAttribute('aria-pressed', privacyMode ? 'true' : 'false');
   button.textContent = privacyMode ? 'Show original values' : 'Hide sensitive values';
@@ -2842,6 +3740,7 @@ function applyPrivacyMode() {
   $('copyDiff').title = privacyMode
     ? 'Copy the currently displayed redacted diff, including TEST and DEV line numbers'
     : 'Copy the currently displayed diff with original values and TEST and DEV line numbers';
+  applyContextHelpMode();
   $('viewMenu').open = false;
   gapStateById.clear();
   render();
@@ -2858,6 +3757,35 @@ $('prev').onclick = () => move(-1);
 $('next').onclick = () => move(1);
 $('focused').onclick = () => { mode = 'focused'; renderDiff(); };
 $('raw').onclick = () => { mode = 'raw'; renderDiff(); };
+$('changeComparison').onclick = openComparisonModal;
+$('contextHelp').onclick = toggleContextHelpMode;
+$('closeContext').onclick = closeContextModal;
+$('contextSearch').addEventListener('input', renderContextDictionary);
+$('contextModal').addEventListener('click', event => {
+  if (event.target === $('contextModal')) closeContextModal();
+});
+$('contextTooltip').addEventListener('mouseenter', () => {
+  if (contextTooltipTimer) window.clearTimeout(contextTooltipTimer);
+});
+$('contextTooltip').addEventListener('mouseleave', scheduleContextTooltipHide);
+$('closeComparison').onclick = closeComparisonModal;
+$('cancelComparison').onclick = closeComparisonModal;
+$('swapComparison').onclick = () => {
+  const source = $('sourceDirectory').value;
+  $('sourceDirectory').value = $('targetDirectory').value;
+  $('targetDirectory').value = source;
+};
+$('browseSource').onclick = () => browseFor($('sourceDirectory'));
+$('browseTarget').onclick = () => browseFor($('targetDirectory'));
+$('folderUp').onclick = () => loadDirectory(browseParent);
+$('useFolder').onclick = () => {
+  if (browseInput && browsePath) browseInput.value = browsePath;
+  $('folderBrowser').hidden = true;
+};
+$('applyComparison').onclick = applyComparison;
+$('comparisonModal').addEventListener('click', event => {
+  if (event.target === $('comparisonModal')) closeComparisonModal();
+});
 $('hideFile').onclick = toggleCurrentHidden;
 $('reviewFile').onclick = toggleCurrentReviewed;
 $('saveReview').onclick = saveReview;
@@ -2880,6 +3808,23 @@ document.querySelectorAll('[data-theme-choice]').forEach(button => {
   };
 });
 document.addEventListener('keydown', event => {
+  if (!$('contextModal').hidden) {
+    if (event.key === 'Escape') {
+      closeContextModal();
+      event.preventDefault();
+    }
+    return;
+  }
+  if (!$('comparisonModal').hidden) {
+    if (event.key === 'Escape') {
+      closeComparisonModal();
+      event.preventDefault();
+    } else if (event.key === 'Enter' && event.ctrlKey) {
+      applyComparison();
+      event.preventDefault();
+    }
+    return;
+  }
   if (event.target === $('search') || event.target?.tagName === 'TEXTAREA') return;
   if (event.key === '[') {
     move(-1);
@@ -2895,6 +3840,9 @@ document.addEventListener('keydown', event => {
     renderDiff();
   } else if (event.key.toLowerCase() === 'p') {
     togglePrivacyMode();
+  } else if (event.key === '?') {
+    toggleContextHelpMode();
+    event.preventDefault();
   } else if (event.key === '/') {
     $('search').focus();
     event.preventDefault();
@@ -2928,6 +3876,7 @@ class _ViewerServer(ThreadingHTTPServer):
     context_lookup: ContextLookup
     git_cache: dict[str, bytes]
     git_cache_lock: threading.Lock
+    state_lock: threading.Lock
 
 
 class _ViewerHandler(BaseHTTPRequestHandler):
@@ -2968,7 +3917,20 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         path = parsed.path
         page_paths = {f"/{self.server.token}", f"/{self.server.token}/"}
         if path in page_paths:
-            self._send_bytes(200, self.server.page, "text/html; charset=utf-8")
+            with self.server.state_lock:
+                page = self.server.page
+            self._send_bytes(200, page, "text/html; charset=utf-8")
+            return
+
+        directories_path = f"/{self.server.token}/directories"
+        if path == directories_path:
+            requested = (parse_qs(parsed.query).get("path") or [None])[0]
+            try:
+                payload = _directory_listing_payload(self.server.workbench, requested)
+            except WorkbenchError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            self._send_json(200, payload)
             return
 
         context_prefix = f"/{self.server.token}/context/"
@@ -3014,7 +3976,48 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         self._send_bytes(200, body, "application/json; charset=utf-8")
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        self.send_error(405)
+        parsed = urlsplit(self.path)
+        comparison_path = f"/{self.server.token}/comparison"
+        if parsed.path != comparison_path:
+            self.send_error(405)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json(400, {"error": "Invalid request length."})
+            return
+        if length <= 0 or length > 65_536:
+            self._send_json(400, {"error": "Invalid comparison request."})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "Comparison request must be valid JSON."})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"error": "Comparison request must be a JSON object."})
+            return
+        source = payload.get("source")
+        target = payload.get("target")
+        persist = payload.get("persist", False)
+        if not isinstance(source, str) or not isinstance(target, str):
+            self._send_json(400, {"error": "Source and target paths must be strings."})
+            return
+        if not isinstance(persist, bool):
+            self._send_json(400, {"error": "Persist must be true or false."})
+            return
+        try:
+            result = _replace_server_comparison(
+                self.server,
+                source_value=source,
+                target_value=target,
+                persist=persist,
+            )
+        except (OSError, WorkbenchError) as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._send_json(200, result)
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -3060,6 +4063,7 @@ class LocalWebDiffViewer:
         server.context_lookup = context_lookup
         server.git_cache = {}
         server.git_cache_lock = threading.Lock()
+        server.state_lock = threading.Lock()
         thread = threading.Thread(
             target=server.serve_forever,
             name="config-review-web-viewer",

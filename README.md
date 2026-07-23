@@ -13,6 +13,7 @@ configurations are semantically equivalent or whether a change is safe to promot
 - Focused Diff for collapsing approved environment-specific noise
 - Full Diff for viewing the complete, literal TEST and DEV text
 - A loopback-only, read-only web viewer with a changed-file tree and Focused/Raw views
+- A searchable context dictionary with hover explanations for recognized YAML elements
 - Exact per-change actions: accept DEV, keep TEST, edit TEST, or open Vimdiff
 - Project-wide noise-filter discovery and user-controlled filtering
 - Session history, automatic progress saving, and current-run undo
@@ -303,6 +304,13 @@ automatically, the terminal status line prints the local URL. Remote SSH session
 require local port forwarding before that URL is reachable
 from your workstation. See [Local Web Diff Viewer](docs/web-diff-viewer.md) for the exact
 review, export, and security behavior.
+
+The web viewer also includes a built-in E-IDS context catalog. Select the `?` button to turn
+context help on, then hover or keyboard-focus recognized services, Helm commands, GitLab
+keywords, GitOps concepts, identity settings, and selected operational terms for a short
+explanation. Select a recognized line to open the complete dictionary entry. Repositories can
+add or override definitions through `.config-review-context.yaml`. See
+[Context Dictionary and Web Tooltips](docs/context-helper.md).
 
 ### File Actions and visible-diff reports
 

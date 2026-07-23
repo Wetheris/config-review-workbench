@@ -1,0 +1,1173 @@
+schemaVersion: 1
+entries:
+  - id: weather-schemas
+    title: Weather Schemas
+    category: Services & Libraries
+    summary: The shared blueprint for weather-message formatting so every service interprets weather
+      data using the same structures.
+    aliases:
+      - weather schema
+    matches:
+      - type: term
+        value: Weather Schemas
+      - type: term
+        value: weather-schema
+      - type: term
+        value: weather-schemas
+  - id: at-search-ingest
+    title: AT Search Ingest
+    category: Services & Libraries
+    summary: Listens for file updates, extracts text, and feeds the content into the central search 
+      index for full-text search.
+    matches:
+      - type: term
+        value: AT Search Ingest
+      - type: term
+        value: at-search-ingest
+  - id: xsim
+    title: Xsim
+    category: Services & Libraries
+    summary: A simulated flight and weather feed used to test workstations and backend services 
+      without connecting to live FAA networks.
+    aliases:
+      - XSIM
+    matches:
+      - type: term
+        value: xsim
+  - id: eids-starter-storage
+    title: EIDS Starter Storage
+    category: Services & Libraries
+    summary: A shared Spring Boot starter that lets E-IDS services connect to S3 or MinIO object 
+      storage consistently.
+    matches:
+      - type: term
+        value: EIDS Starter Storage
+      - type: term
+        value: eids-starter-storage
+  - id: eids-starter-logging
+    title: eids-starter-logging
+    category: Services & Libraries
+    summary: A shared library that gives microservices the same structured log format for tracing 
+      and troubleshooting.
+    matches:
+      - type: term
+        value: eids-starter-logging
+  - id: database-ldr
+    title: Database LDR
+    category: Services & Libraries
+    summary: Configuration for database replication and dual database users so credentials can be 
+      rotated without interrupting live operations.
+    matches:
+      - type: term
+        value: Database LDR
+      - type: term
+        value: database-ldr
+  - id: monitoring
+    title: Monitoring
+    category: Services & Libraries
+    summary: The health and observability platform that tracks service uptime, resource usage, and 
+      messaging performance.
+    matches:
+      - type: term
+        value: monitoring
+  - id: eids-common-model
+    title: eids-common-model
+    category: Services & Libraries
+    summary: The shared backend model library that defines common E-IDS data objects across 
+      services.
+    matches:
+      - type: term
+        value: eids-common-model
+  - id: deploy-cutover-service
+    title: Deploy and Cutover Service
+    category: Services & Libraries
+    summary: Automates traffic switching between active and standby sites during deployments or 
+      operational cutovers.
+    matches:
+      - type: term
+        value: Deploy and Cutover Service
+      - type: term
+        value: deploy-cutover
+      - type: term
+        value: cutover-service
+  - id: at-mapping-services
+    title: at-mapping-services
+    category: Services & Libraries
+    summary: Converts spatial coordinates and records into map graphics and display layers for 
+      controller workstations.
+    matches:
+      - type: term
+        value: at-mapping-services
+  - id: at-transfer
+    title: AT Transfer
+    category: Services & Libraries
+    summary: A shared message-model library that standardizes data exchanged between Air Traffic 
+      backend services.
+    matches:
+      - type: term
+        value: AT Transfer
+      - type: term
+        value: at-transfer
+  - id: swim-relay
+    title: SWIM Relay
+    category: Services & Libraries
+    summary: A secure gateway that receives external SWIM updates and forwards them into internal 
+      E-IDS message queues.
+    details: Routing changes can affect whether national weather or flight information reaches 
+      downstream services.
+    aliases:
+      - swimRelay
+    matches:
+      - type: term
+        value: SWIM Relay
+      - type: term
+        value: swim-relay
+      - type: term
+        value: swimRelay
+  - id: swim-model
+    title: SWIM Model
+    category: Services & Libraries
+    summary: The Java data structures used to parse messages received from national SWIM feeds.
+    matches:
+      - type: term
+        value: SWIM Model
+      - type: term
+        value: swim-model
+  - id: pirep-service
+    title: PIREP
+    category: Services & Libraries
+    summary: Receives, validates, stores, and prepares pilot weather reports for distribution and 
+      use within the national system.
+    aliases:
+      - Pilot Report
+    matches:
+      - type: term
+        value: PIREP
+      - type: term
+        value: pirep-service
+  - id: swim-eids-transform
+    title: SWIM-EIDS Transform
+    category: Services & Libraries
+    summary: Translates external FAA weather and flight data into the internal formats expected by 
+      E-IDS services.
+    matches:
+      - type: term
+        value: SWIM-EIDS Transform
+      - type: term
+        value: swim-eids-transform
+  - id: notam-service
+    title: NOTAM
+    category: Services & Libraries
+    summary: Processes time-sensitive operational and safety notices, such as runway closures, for 
+      controller display.
+    aliases:
+      - Notice to Air Missions
+    matches:
+      - type: term
+        value: NOTAM
+      - type: term
+        value: notam-service
+  - id: saa-service
+    title: SAA — Special Activity Airspace
+    category: Services & Libraries
+    summary: Tracks restricted, military, and temporary-use airspace, including when and where 
+      boundaries are active.
+    aliases:
+      - Special Activity Airspace
+    matches:
+      - type: term
+        value: Special Activity Airspace
+      - type: term
+        value: saa-service
+  - id: sensor-service
+    title: Sensor
+    category: Services & Libraries
+    summary: Connects to airport sensors and supplies real-time environmental readings to displays 
+      and downstream services.
+    matches:
+      - type: term
+        value: sensor-service
+  - id: mnc-services
+    title: MNC Services
+    category: Services & Libraries
+    summary: The backend for technical administration tools used to monitor hardware nodes and 
+      inspect system status.
+    matches:
+      - type: term
+        value: MNC Services
+      - type: term
+        value: mnc-services
+  - id: at-spatial-data
+    title: AT Spatial Data
+    category: Services & Libraries
+    summary: A geographic lookup service containing airport boundaries, routes, fixes, and 
+      navigational features.
+    matches:
+      - type: term
+        value: AT Spatial Data
+      - type: term
+        value: at-spatial-data
+  - id: static-data-services
+    title: Static Data Services
+    category: Services & Libraries
+    summary: Provides non-moving information such as airport charts, local rules, and workstation 
+      position setups through a REST API.
+    matches:
+      - type: term
+        value: Static Data Services
+      - type: term
+        value: static-data-services
+  - id: og-mstl-service
+    title: OG MSTL Service
+    category: Services & Libraries
+    summary: Supports custom operational map overlays, including user-drawn lines, notes, and 
+      annotations.
+    matches:
+      - type: term
+        value: OG MSTL Service
+      - type: term
+        value: og-mstl
+  - id: og-core
+    title: OG Core
+    category: Services & Libraries
+    summary: The core framework that processes and manages operational map graphics shown on 
+      controller workstations.
+    matches:
+      - type: term
+        value: OG Core
+      - type: term
+        value: og-core
+  - id: identity-service
+    title: Identity
+    category: Services & Libraries
+    summary: Handles authentication and identity verification so only authorized users can access 
+      workstations and administrative tools.
+    matches:
+      - type: term
+        value: identity-service
+  - id: og-opui
+    title: OG OPUI
+    category: Services & Libraries
+    summary: The controller-facing toolbar and menu controls for drawing lines, placing notes, and 
+      toggling map overlays.
+    matches:
+      - type: term
+        value: OG OPUI
+      - type: term
+        value: og-opui
+  - id: og-smnc
+    title: OG SMNC
+    category: Services & Libraries
+    summary: An administrative tool for inspecting and configuring operational graphic settings 
+      across facility workstations.
+    matches:
+      - type: term
+        value: OG SMNC
+      - type: term
+        value: og-smnc
+  - id: eim-services
+    title: EIM Services
+    category: Services & Libraries
+    summary: Manages the lifecycle and processing schedule of national airport and aeronautical data
+      updates.
+    matches:
+      - type: term
+        value: EIM Services
+      - type: term
+        value: eim-services
+  - id: static-data-velocity
+    title: static-data-velocity
+    category: Services & Libraries
+    summary: An in-memory cache that delivers static airport and facility data quickly without 
+      repeatedly querying databases.
+    matches:
+      - type: term
+        value: static-data-velocity
+  - id: user-management-service
+    title: User Management Service
+    category: Services & Libraries
+    summary: Creates user accounts, assigns roles, manages credentials, and associates controllers 
+      with positions.
+    matches:
+      - type: term
+        value: User Management Service
+      - type: term
+        value: user-management
+  - id: content-availability-checker
+    title: content-availability-checker
+    category: Services & Libraries
+    summary: Verifies that required maps, airport documents, and content packages exist before users
+      try to open them.
+    matches:
+      - type: term
+        value: content-availability-checker
+  - id: mnc-topology
+    title: MNC Topology
+    category: Services & Libraries
+    summary: A shared model library that represents network layouts and component relationships 
+      across environments.
+    matches:
+      - type: term
+        value: MNC Topology
+      - type: term
+        value: mnc-topology
+  - id: swim-connector
+    title: swim — SWIM Consumer / Connector
+    category: Services & Libraries
+    summary: The primary connector that subscribes to external System-Wide Information Management 
+      feeds and receives raw national aviation data.
+    matches:
+      - type: term
+        value: SWIM Consumer
+      - type: term
+        value: swim-connector
+  - id: ldr-service
+    title: LDR — Logical Data Replication Service
+    category: Services & Libraries
+    summary: Replicates database changes from active systems to standby databases at other 
+      facilities or sites.
+    matches:
+      - type: term
+        value: Logical Data Replication Service
+      - type: term
+        value: ldr-service
+  - id: sensor-to-pg
+    title: SensorToPG
+    category: Services & Libraries
+    summary: Consumes live sensor data from RabbitMQ and stores it in PostgreSQL for history and 
+      display retrieval.
+    matches:
+      - type: term
+        value: SensorToPG
+      - type: term
+        value: sensor-to-pg
+  - id: fep-monitor
+    title: FEP Monitor
+    category: Services & Libraries
+    summary: Watches Front End Processors and verifies that operational communications hardware 
+      remains available.
+    matches:
+      - type: term
+        value: FEP Monitor
+      - type: term
+        value: fep-monitor
+  - id: presence-service
+    title: Presence Service
+    category: Services & Libraries
+    summary: Tracks logged-in users, controller positions, workstation locations, and active 
+      workstation sessions.
+    matches:
+      - type: term
+        value: Presence Service
+      - type: term
+        value: presence-service
+  - id: eim-data-processor
+    title: EIM Data Processor
+    category: Services & Libraries
+    summary: Retrieves national airport updates, transforms them into operational packages, and 
+      stores results for downstream services.
+    aliases:
+      - eim-processor
+    matches:
+      - type: term
+        value: EIM Data Processor
+      - type: term
+        value: eim-processor
+  - id: database-backup
+    title: Database Backup
+    category: Services & Libraries
+    summary: Creates scheduled CockroachDB and PostgreSQL snapshots and stores them in protected 
+      backup storage.
+    matches:
+      - type: term
+        value: Database Backup
+      - type: term
+        value: database-backup
+  - id: database-interface
+    title: Database Interface
+    category: Services & Libraries
+    summary: A controlled API layer that standardizes and secures database queries made by backend 
+      services.
+    matches:
+      - type: term
+        value: Database Interface
+      - type: term
+        value: database-interface
+  - id: at-search-connector
+    title: AT Search Connector
+    category: Services & Libraries
+    summary: Scans files in S3 or MinIO and indexes their text in Elasticsearch for fast document 
+      search.
+    matches:
+      - type: term
+        value: AT Search Connector
+      - type: term
+        value: at-search-connector
+  - id: content-delivery
+    title: Content Delivery
+    category: Services & Libraries
+    summary: Distributes updated maps, charts, documents, and other content from central systems to 
+      operational facilities.
+    aliases:
+      - content-delivery
+    matches:
+      - type: term
+        value: Content Delivery
+      - type: term
+        value: content-delivery
+  - id: css-wx-service
+    title: CSS-Wx Service — CSSWX
+    category: Services & Libraries
+    summary: Receives live weather products, removes duplicates, and forwards clean weather data to 
+      internal RabbitMQ queues.
+    aliases:
+      - CSSWX
+      - Common Support Services - Weather
+    matches:
+      - type: term
+        value: CSS-Wx
+      - type: term
+        value: CSSWX
+      - type: term
+        value: css-wx-service
+  - id: at-services
+    title: AT Services
+    category: Services & Libraries
+    summary: Manages workstation settings, status summaries, operational screen configuration, and 
+      related Air Traffic functions.
+    matches:
+      - type: term
+        value: AT Services
+      - type: term
+        value: at-services
+  - id: at-cds-map-loader
+    title: AT CDS Map Loader
+    category: Services & Libraries
+    summary: Retrieves map and airspace data from CDS, creates map-tile packages, and stores them in
+      S3 for workstation use.
+    matches:
+      - type: term
+        value: AT CDS Map Loader
+      - type: term
+        value: at-cds-map-loader
+  - id: mission-support-services
+    title: Mission Support Services — MSS
+    category: Services & Libraries
+    summary: A REST API for creating, reading, updating, and deleting non-real-time documents, 
+      rules, and facility position settings.
+    aliases:
+      - MSS
+    matches:
+      - type: term
+        value: Mission Support Services
+      - type: term
+        value: mss-service
+  - id: at-refinery
+    title: AT Refinery
+    category: Services & Libraries
+    summary: Filters and enriches live data before sending clean information to controller displays.
+    matches:
+      - type: term
+        value: AT Refinery
+      - type: term
+        value: at-refinery
+  - id: static-services
+    title: static-services
+    category: Services & Libraries
+    summary: The primary Spring Boot API service for Mission Support business logic, secured by 
+      Keycloak and backed by CockroachDB.
+    matches:
+      - type: term
+        value: static-services
+  - id: trashcan
+    title: trashcan
+    category: Services & Libraries
+    summary: Permanently purges soft-deleted Mission Support records after the configured retention 
+      period.
+    details: The documented Alpha configuration uses a 60-day retention window.
+    matches:
+      - type: term
+        value: trashcan
+  - id: dnc-service
+    title: dnc-service
+    category: Services & Libraries
+    summary: Transports verified aeronautical files to East and West operational storage 
+      destinations on a scheduled interval.
+    details: The documented Alpha schedule runs every five minutes.
+    aliases:
+      - Data Network Control
+    matches:
+      - type: term
+        value: dnc-service
+      - type: term
+        value: Data Network Control
+  - id: helm-chart
+    title: Helm chart
+    category: Helm & Packaging
+    summary: A Kubernetes packaging format used to version, configure, package, and deploy an 
+      application or service.
+    matches:
+      - type: term
+        value: Helm chart
+  - id: chart-of-charts
+    title: Chart of Charts
+    category: Helm & Packaging
+    summary: A master Helm chart that packages and coordinates multiple individual component charts.
+    matches:
+      - type: term
+        value: Chart of Charts
+      - type: term
+        value: chart-of-charts
+  - id: sub-chart
+    title: Sub-chart
+    category: Helm & Packaging
+    summary: An individual service chart included as a dependency of a master Helm chart.
+    aliases:
+      - sub-charts
+    matches:
+      - type: term
+        value: sub-chart
+      - type: term
+        value: sub-charts
+  - id: chart-yaml
+    title: Chart.yaml
+    category: Helm & Packaging
+    summary: The chart metadata file that records chart information and dependency names and 
+      versions.
+    matches:
+      - type: file-name
+        value: Chart.yaml
+      - type: term
+        value: Chart.yaml
+  - id: helm-repo-add
+    title: helm repo add
+    category: Helm & Packaging
+    summary: Connects Helm to a chart repository, often an isolated GitLab package registry 
+      configured with deployment credentials.
+    matches:
+      - type: command
+        value: helm repo add
+  - id: helm-dependency-update
+    title: helm dependency update
+    category: Helm & Packaging
+    summary: Downloads the dependency versions declared in Chart.yaml.
+    matches:
+      - type: command
+        value: helm dependency update
+  - id: helm-package
+    title: helm package
+    category: Helm & Packaging
+    summary: Packages a chart and its downloaded dependencies into a compressed .tgz archive.
+    matches:
+      - type: command
+        value: helm package
+  - id: gitlab-include
+    title: include
+    category: GitLab CI/CD
+    summary: Imports reusable local or external pipeline configuration into the current GitLab CI/CD
+      file.
+    matches:
+      - type: yaml-key
+        value: include
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-variables
+    title: variables
+    category: GitLab CI/CD
+    summary: Defines pipeline-wide settings and values passed into jobs or downstream pipelines.
+    matches:
+      - type: yaml-key
+        value: variables
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-stages
+    title: stages
+    category: GitLab CI/CD
+    summary: Defines the ordered phases of a pipeline, such as version, package, publish, deploy, 
+      and report.
+    matches:
+      - type: yaml-key
+        value: stages
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-extends
+    title: extends
+    category: GitLab CI/CD
+    summary: Lets a job inherit scripts, variables, and other properties from a reusable job 
+      template.
+    matches:
+      - type: yaml-key
+        value: extends
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-rules
+    title: rules
+    category: GitLab CI/CD
+    summary: Contains ordered conditions that determine whether a GitLab job is included and how it 
+      runs.
+    matches:
+      - type: yaml-key
+        value: rules
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-dependencies
+    title: dependencies
+    category: GitLab CI/CD
+    summary: Selects earlier jobs whose artifacts should be downloaded by the current job.
+    matches:
+      - type: yaml-key
+        value: dependencies
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-needs
+    title: needs
+    category: GitLab CI/CD
+    summary: Defines direct prerequisites so a job can start as soon as required upstream jobs 
+      finish.
+    matches:
+      - type: yaml-key
+        value: needs
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-before-script
+    title: before_script
+    category: GitLab CI/CD
+    summary: Runs setup commands before the main GitLab job script.
+    matches:
+      - type: yaml-key
+        value: before_script
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-script
+    title: script
+    category: GitLab CI/CD
+    summary: Contains the primary shell commands executed by a GitLab pipeline job.
+    matches:
+      - type: yaml-key
+        value: script
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: gitlab-image
+    title: image / entrypoint
+    category: GitLab CI/CD
+    summary: Selects the container image and optional startup command used to run a pipeline job.
+    matches:
+      - type: yaml-key
+        value: image
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+      - type: yaml-key
+        value: entrypoint
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: tagging-jobs-template
+    title: .tagging-jobs.yaml
+    category: GitLab CI/CD
+    summary: A shared pipeline template that provides standardized GitLab API status and tagging 
+      jobs.
+    matches:
+      - type: term
+        value: .tagging-jobs.yaml
+  - id: ci-default-branch
+    title: $CI_DEFAULT_BRANCH
+    category: GitLab CI/CD
+    summary: A predefined GitLab variable containing the repository default branch name.
+    matches:
+      - type: command
+        value: $CI_DEFAULT_BRANCH
+  - id: ci-pipeline-source
+    title: $CI_PIPELINE_SOURCE
+    category: GitLab CI/CD
+    summary: A predefined GitLab variable describing how the current pipeline was triggered.
+    matches:
+      - type: command
+        value: $CI_PIPELINE_SOURCE
+  - id: cron-trigger
+    title: CRON Trigger / Schedule
+    category: GitLab CI/CD
+    summary: A time-based scheduler that runs a pipeline automatically at predefined intervals.
+    matches:
+      - type: term
+        value: CRON Trigger
+      - type: term
+        value: pipeline schedule
+  - id: mark-dt-pending
+    title: mark-dt-pending
+    category: GitLab CI/CD
+    summary: A reporting job that marks a deployment target as Pending when qualifying configuration
+      changes are merged.
+    matches:
+      - type: term
+        value: mark-dt-pending
+      - type: term
+        value: .mark-dt-pending
+  - id: report-stage
+    title: report stage
+    category: GitLab CI/CD
+    summary: A pipeline stage reserved for deployment status, version, tag, or environment 
+      reporting.
+    matches:
+      - type: yaml-value
+        value: report
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+      - type: term
+        value: report stage
+  - id: when-never
+    title: 'when: never'
+    category: GitLab CI/CD
+    summary: Explicitly prevents a job from running when the associated GitLab rule matches.
+    matches:
+      - type: command
+        value: 'when: never'
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: when-on-success
+    title: 'when: on_success'
+    category: GitLab CI/CD
+    summary: Runs a job only after its prerequisites succeed and its rule criteria match.
+    matches:
+      - type: command
+        value: 'when: on_success'
+        files:
+          - '*.gitlab-ci.yml'
+          - '*.gitlab-ci.yaml'
+          - .gitlab-ci.yml
+          - .gitlab-ci.yaml
+          - '*pipeline*.yml'
+          - '*pipeline*.yaml'
+  - id: sops
+    title: SOPS
+    category: Security & GitOps
+    summary: Encrypts sensitive values stored in Git, including passwords, API keys, and Kubernetes 
+      Secret data.
+    matches:
+      - type: term
+        value: SOPS
+      - type: term
+        value: .sops.yaml
+  - id: age-encryption
+    title: Age
+    category: Security & GitOps
+    summary: An encryption standard commonly used with SOPS to encrypt values for 
+      environment-specific recipients.
+    matches:
+      - type: term
+        value: age recipients
+      - type: term
+        value: age key
+      - type: term
+        value: age-encryption
+  - id: gitops
+    title: GitOps
+    category: Security & GitOps
+    summary: A deployment method where the desired system state is declared in Git and reconciled 
+      automatically.
+    matches:
+      - type: term
+        value: GitOps
+  - id: fluxcd
+    title: Flux / FluxCD
+    category: Security & GitOps
+    summary: The GitOps controller that watches configuration repositories and reconciles Kubernetes
+      or OpenShift clusters.
+    aliases:
+      - Flux
+    matches:
+      - type: term
+        value: FluxCD
+      - type: term
+        value: Flux
+  - id: cluster-reconciliation
+    title: Cluster Reconciliation
+    category: Security & GitOps
+    summary: The process of bringing the live cluster state into alignment with the desired state 
+      committed in Git.
+    matches:
+      - type: term
+        value: Cluster Reconciliation
+      - type: term
+        value: reconciliation
+  - id: yq
+    title: yq
+    category: Security & GitOps
+    summary: A command-line YAML processor used by scripts to read and update values such as Helm 
+      dependency versions.
+    matches:
+      - type: command
+        value: 'yq '
+      - type: command
+        value: yq.
+  - id: jq
+    title: jq
+    category: Security & GitOps
+    summary: A command-line JSON processor used to extract values from API responses and other JSON 
+      documents.
+    matches:
+      - type: command
+        value: 'jq '
+  - id: curl
+    title: curl
+    category: Security & GitOps
+    summary: A command-line HTTP client used to call GitLab APIs, create merge requests, and trigger
+      pipelines.
+    matches:
+      - type: command
+        value: 'curl '
+  - id: mstl
+    title: MSTL — Mission Support Tool Suite
+    category: Identity & Mission Support
+    summary: The Mission Support Tool Suite and its administrative applications, services, and 
+      access boundary.
+    aliases:
+      - Mission Support Tool Suite
+    matches:
+      - type: term
+        value: MSTL
+      - type: term
+        value: eids-mstl
+  - id: keycloak
+    title: Keycloak / KeycloakX
+    category: Identity & Mission Support
+    summary: The identity platform that provides authentication, OAuth2 and OpenID Connect tokens, 
+      SSO, and role-based access control.
+    matches:
+      - type: term
+        value: KeycloakX
+      - type: term
+        value: Keycloak
+      - type: term
+        value: keycloakx
+  - id: eids-mstl-realm
+    title: 'Realm: eids-mstl'
+    category: Identity & Mission Support
+    summary: The isolated Keycloak security boundary containing Mission Support users, roles, 
+      clients, credentials, and login policies.
+    matches:
+      - type: yaml-value
+        value: eids-mstl
+      - type: term
+        value: eids-mstl
+  - id: allow-insecure-images
+    title: allowInsecureImages
+    category: Identity & Mission Support
+    summary: A chart setting that relaxes normal trusted-image restrictions. It deserves extra 
+      review before promotion beyond Alpha.
+    matches:
+      - type: yaml-key
+        value: allowInsecureImages
+  - id: cockroachdb
+    title: CockroachDB
+    category: Identity & Mission Support
+    summary: A distributed SQL database used by Mission Support application services for business 
+      and operational data.
+    matches:
+      - type: term
+        value: CockroachDB
+  - id: postgresql
+    title: PostgreSQL
+    category: Identity & Mission Support
+    summary: The relational database used by Keycloak to store identity configuration, password 
+      hashes, clients, and active sessions.
+    matches:
+      - type: term
+        value: PostgreSQL
+      - type: term
+        value: postgresql
+  - id: openshift-route
+    title: OpenShift Route
+    category: Identity & Mission Support
+    summary: An OpenShift resource that exposes a service through a DNS hostname and TLS-enabled 
+      route.
+    matches:
+      - type: term
+        value: OpenShift Route
+      - type: term
+        value: 'kind: Route'
+  - id: quarkus
+    title: Quarkus
+    category: Identity & Mission Support
+    summary: A Java runtime optimized for containerized applications and used by modern Keycloak 
+      distributions.
+    matches:
+      - type: term
+        value: Quarkus
+  - id: thin-storage
+    title: Thin-Provisioned Storage
+    category: Identity & Mission Support
+    summary: A dynamic storage class that allocates persistent capacity as a database grows.
+    aliases:
+      - thin-csi-1004
+      - thin-csi-1005
+    matches:
+      - type: term
+        value: thin-csi-1004
+      - type: term
+        value: thin-csi-1005
+      - type: term
+        value: Thin-Provisioned Storage
+  - id: nfdc
+    title: NFDC — National Flight Data Center
+    category: Identity & Mission Support
+    summary: The authoritative source associated with recurring aeronautical data publication 
+      cycles.
+    matches:
+      - type: term
+        value: NFDC
+      - type: term
+        value: National Flight Data Center
+  - id: nms
+    title: NMS
+    category: Identity & Mission Support
+    summary: A monitoring or data-loading component name whose exact project-specific expansion 
+      should be confirmed in repository documentation.
+    matches:
+      - type: term
+        value: NMS
+  - id: opip
+    title: OPIP
+    category: Identity & Mission Support
+    summary: The operational application suite or deployment plane used by live field facilities; 
+      its official expansion should be confirmed from project documentation.
+    matches:
+      - type: term
+        value: OPIP
+      - type: term
+        value: alpha-opip-east
+      - type: term
+        value: alpha-opip-west
+  - id: east-west
+    title: East / West destinations
+    category: Identity & Mission Support
+    summary: Regional or redundant destination groupings used to route and distribute data to 
+      operational facilities.
+    matches:
+      - type: term
+        value: alpha-opip-east
+      - type: term
+        value: alpha-opip-west
+  - id: starburst
+    title: Starburst
+    category: Identity & Mission Support
+    summary: An external enterprise data source used to retrieve documents such as Letters of 
+      Agreement and Standard Operating Procedures.
+    matches:
+      - type: term
+        value: Starburst
+      - type: term
+        value: rdsfeeds-aurora
+  - id: ingestion-engine
+    title: Ingestion Engine
+    category: Identity & Mission Support
+    summary: A general term for background services that retrieve external data and bring it into 
+      E-IDS storage or processing pipelines.
+    matches:
+      - type: term
+        value: Ingestion Engine
+  - id: storage-class
+    title: storageClass
+    category: Identity & Mission Support
+    summary: Selects the Kubernetes or OpenShift storage class used to provision persistent volumes.
+    matches:
+      - type: yaml-key
+        value: storageClass
+  - id: realm-key
+    title: realm
+    category: Identity & Mission Support
+    summary: Defines an isolated Keycloak boundary for users, roles, applications, credentials, and 
+      token policies.
+    matches:
+      - type: yaml-key
+        value: realm
+  - id: retention-days
+    title: Retention period
+    category: Identity & Mission Support
+    summary: Controls how long soft-deleted records remain recoverable before permanent removal.
+    matches:
+      - type: yaml-key
+        value: retentionDays
+      - type: yaml-key
+        value: retention-days
+      - type: yaml-key
+        value: retention
+  - id: eids-acronym
+    title: E-IDS
+    category: FAA & E-IDS Acronyms
+    summary: Enterprise Information Display System.
+    aliases:
+      - Enterprise Information Display System
+  - id: swim-acronym
+    title: SWIM
+    category: FAA & E-IDS Acronyms
+    summary: System-Wide Information Management.
+    aliases:
+      - System-Wide Information Management
+  - id: stdds-acronym
+    title: STDDS
+    category: FAA & E-IDS Acronyms
+    summary: SWIM Terminal Data Distribution System.
+    aliases:
+      - SWIM Terminal Data Distribution System
+  - id: csswx-acronym
+    title: CSS-Wx
+    category: FAA & E-IDS Acronyms
+    summary: Common Support Services – Weather.
+    aliases:
+      - Common Support Services - Weather
+  - id: rvr-acronym
+    title: RVR
+    category: FAA & E-IDS Acronyms
+    summary: Runway Visual Range.
+    aliases:
+      - Runway Visual Range
+  - id: mnc-acronym
+    title: MNC
+    category: FAA & E-IDS Acronyms
+    summary: Monitor and Control.
+    aliases:
+      - Monitor and Control
+  - id: eim-acronym
+    title: EIM
+    category: FAA & E-IDS Acronyms
+    summary: Enterprise Information Management Platform.
+    aliases:
+      - Enterprise Information Management
+  - id: ndc-acronym
+    title: NDC
+    category: FAA & E-IDS Acronyms
+    summary: National Data Center.
+    aliases:
+      - National Data Center
+  - id: nas-acronym
+    title: NAS
+    category: FAA & E-IDS Acronyms
+    summary: National Airspace System.
+    aliases:
+      - National Airspace System
+  - id: data-item
+    title: Data Item
+    category: Operational Glossary
+    summary: The information shown to an Air Traffic user, excluding its supporting metadata.
+  - id: datastore
+    title: DataStore
+    category: Operational Glossary
+    summary: The abstract storage system containing E-IDS data and its metadata.
+  - id: dynamic-data
+    title: Dynamic Data
+    category: Operational Glossary
+    summary: Information updated regularly throughout the day, including weather, NOTAMs, PIREPs, 
+      SAA schedules, and RVR.
+  - id: static-data
+    title: Static Data
+    category: Operational Glossary
+    summary: Information updated periodically or as needed, such as documents, charts, images, and 
+      structured reference data.
+  - id: external-interface
+    title: External Interface
+    category: Operational Glossary
+    summary: A connection between E-IDS and outside systems, gateways, national feeds, monitoring 
+      systems, or local sensors.
+  - id: facility-id
+    title: Facility ID
+    category: Operational Glossary
+    summary: The identifying code assigned to an Air Traffic facility.
+  - id: geospatial-map
+    title: Geospatial Map
+    category: Operational Glossary
+    summary: The interactive map where users enable or disable geographic display layers.
+  - id: national-settings
+    title: National Settings
+    category: Operational Glossary
+    summary: Standard display configuration maintained nationally and applied across E-IDS 
+      positions.
+  - id: operational-status-indicator
+    title: Operational Status Indicator
+    category: Operational Glossary
+    summary: A persistent indication that a specific operational condition currently exists.
+  - id: position-setup
+    title: Position Setup
+    category: Operational Glossary
+    summary: The user-interface, behavior, and navigation configuration assigned to an operational 
+      position.
+  - id: position-template
+    title: Position Template
+    category: Operational Glossary
+    summary: A nationally managed starting design used to create position setups.
+  - id: system-status-indicator
+    title: System Status Indicator
+    category: Operational Glossary
+    summary: An indication that a system feed or interface is unavailable or degraded.
+  - id: ui-element
+    title: User Interface Element
+    category: Operational Glossary
+    summary: The user-facing display and interaction representation of one or more stored data 
+      items.
+  - id: workspace-area
+    title: Workspace Area
+    category: Operational Glossary
+    summary: The display region that switches between the home screen and requested subpages.

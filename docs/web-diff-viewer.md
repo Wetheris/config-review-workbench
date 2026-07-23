@@ -2,8 +2,9 @@
 
 The web viewer is a browser-based companion for release reviewers who want to scan every
 currently changed file without navigating the terminal interface one file at a time. It
-remains review-only for DEV and TEST: it cannot merge, edit, update terminal completion, or
-modify the comparison configuration. Its hide/review/note state is temporary browser memory.
+remains review-only for configuration content: it cannot merge, edit, or update terminal
+completion. The browser can switch the source and target directories and can optionally save
+those paths as the project default. Its hide/review/note state is temporary browser memory.
 
 ## Opening it
 
@@ -21,12 +22,33 @@ http://127.0.0.1:43127/random-token/
 The server remains available while the workbench process is running. Pressing `w` again
 replaces it with a newly generated snapshot.
 
+## Changing the comparison in the browser
+
+Select **Change comparison…** in the top toolbar to choose a different incoming/source
+directory and current/target directory without restarting the workbench. Paths can be typed or
+selected with the local folder browser. Relative paths are resolved from the directory where
+the workbench process was launched.
+
+The optional **Save these paths as the project default** checkbox writes the verified paths to
+the active `.config-review.yaml`. It is unchecked by default and unavailable in dry-run mode.
+Applying a different comparison rebuilds the complete workbench and browser snapshot, including
+the Git repository context, file list, Focused Diff filters, and Raw Diff. Temporary browser
+notes, hidden-file choices, reviewed-file choices, and expanded context are cleared, so export
+notes before switching comparisons.
+
+The directory browser and comparison endpoint remain loopback-only and protected by the same
+random URL token as the rest of the viewer. Only existing directories are accepted. The source
+and target cannot be the same directory, and a failed comparison leaves the current browser
+snapshot active.
+
 ## Interface
 
 The viewer provides:
 
 - A searchable directory tree containing only files with current DEV/TEST differences
 - Previous and next changed-file navigation
+- A **Change comparison…** dialog for selecting new source and target directories
+- Optional `?` context-help mode with hover tooltips on recognized YAML elements
 - **Focused**, which mirrors the workbench's current noise and display filters
 - **Raw**, which shows the complete literal text comparison
 - TEST and DEV line-number gutters
@@ -42,6 +64,20 @@ The viewer provides:
 - A **Copy displayed diff** action in both normal and privacy modes, including both TEST and
   DEV line-number columns
 - Reviewed-files save and print actions
+
+## Context dictionary
+
+Select the `?` button in the toolbar to enable context-help mode. Recognized services, Helm
+commands, GitLab pipeline keywords, GitOps concepts, identity settings, and selected E-IDS
+terms then receive a subtle hover treatment. Hover or keyboard-focus a recognized line for a
+compact explanation. Select the line to open the full searchable dictionary entry.
+
+The initial bundled catalog can be extended or overridden with a local
+`.config-review-context.yaml` file. Context is explanatory only: it does not hide changes or
+change the comparison result. Privacy mode turns context help off and disables the `?` button.
+
+See [Context Dictionary and Web Tooltips](context-helper.md) for the local schema and supported
+matching rules.
 
 Keyboard shortcuts inside the browser:
 

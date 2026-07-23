@@ -5,12 +5,12 @@ import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import pytest
 
 import config_review.web_view as web_view
-from config_review.core import AppSettings
+from config_review.core import AppSettings, load_project_path_settings
 from config_review.web_view import (
     LocalWebDiffViewer,
     _ContextGapSnapshot,
@@ -78,6 +78,15 @@ def test_web_snapshot_contains_only_current_differences_and_review_metadata(
     assert file_data["privatePath"] == "changed.yaml"
     assert snapshot["privateSource"] == "[DEV ROOT]"
     assert snapshot["privateTarget"] == "[TEST ROOT]"
+    assert snapshot["comparison"] == {
+        "source": str(source),
+        "target": str(target),
+        "launchDirectory": str(Path.cwd().resolve()),
+        "configFile": str(root / ".config-review.yaml"),
+        "canPersist": True,
+    }
+    assert len(snapshot["contextCatalog"]["entries"]) >= 100
+    assert snapshot["contextCatalog"]["diagnostics"] == []
     assert change["testRange"] == "1"
     assert change["devRange"] == "1"
     assert len(change["key"]) == 24
@@ -138,6 +147,7 @@ def test_context_gap_payload_expands_from_either_edge_and_stops_at_bounds():
         "privateText": "line 1",
         "kind": "context",
         "emphasisRanges": [],
+        "contextRefs": [],
     }
     assert first["lines"][-1]["text"] == "line 10"
     assert first["hasMore"] is True
@@ -242,6 +252,30 @@ def test_snapshot_marks_exact_intraline_value_changes(tmp_path: Path):
 
     assert [removed["text"][start:end] for start, end in removed["emphasisRanges"]] == ["test"]
     assert [added["text"][start:end] for start, end in added["emphasisRanges"]] == ["dev"]
+
+
+def test_snapshot_attaches_context_references_to_matching_yaml_lines(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    source.mkdir(parents=True)
+    target.mkdir()
+    (source / "values.keycloak.yaml").write_text(
+        "keycloakx:\n  realm: eids-mstl\n  allowInsecureImages: true\n",
+        encoding="utf-8",
+    )
+    (target / "values.keycloak.yaml").write_text(
+        "keycloakx:\n  realm: old\n  allowInsecureImages: false\n",
+        encoding="utf-8",
+    )
+
+    snapshot = build_web_diff_snapshot(Workbench(_settings(root)))
+    lines = snapshot["files"][0]["raw"]["lines"]
+
+    realm = next(line for line in lines if line["text"] == "  realm: eids-mstl")
+    insecure = next(line for line in lines if line["text"] == "  allowInsecureImages: true")
+    assert "eids-mstl-realm" in realm["contextRefs"]
+    assert insecure["contextRefs"] == ["allow-insecure-images"]
 
 
 def test_snapshot_does_not_collect_git_context_eagerly(
@@ -356,6 +390,15 @@ def test_web_page_escapes_configuration_and_includes_review_controls():
     assert "Add note" in page
     assert "Add Git context" in page
     assert "Copy displayed diff" in page
+    assert 'id="contextHelp"' in page
+    assert "context-help-button" in page
+    assert "context-help-mode" in page
+    assert "contextTooltip" in page
+    assert "contextSearch" in page
+    assert "decorateContextTarget" in page
+    assert "toggleContextHelpMode" in page
+    assert "showContextTooltip" in page
+    assert "context-ref-button" not in page
     assert "displayedDiffText" in page
     assert "Copied the displayed redacted diff, including line numbers." in page
     assert "Copied the displayed diff with original values and line numbers." in page
@@ -599,5 +642,104 @@ def test_web_viewer_serves_lazy_git_context_and_rejects_writes(tmp_path: Path):
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(launch.url + "context/not-a-change", timeout=2)
         assert exc_info.value.code == 404
+    finally:
+        viewer.stop()
+
+
+def test_web_viewer_can_browse_and_replace_comparison_directories(tmp_path: Path):
+    root = tmp_path / "project"
+    source = root / "dev"
+    target = root / "test"
+    next_source = root / "stage"
+    next_target = root / "prod"
+    for directory in (source, target, next_source, next_target):
+        directory.mkdir(parents=True, exist_ok=True)
+    (source / "first.yaml").write_text("value: dev\n", encoding="utf-8")
+    (target / "first.yaml").write_text("value: test\n", encoding="utf-8")
+    (next_source / "second.yaml").write_text("value: stage\n", encoding="utf-8")
+    (next_target / "second.yaml").write_text("value: prod\n", encoding="utf-8")
+
+    viewer = LocalWebDiffViewer()
+    try:
+        launch = viewer.open(Workbench(_settings(root)), open_browser=False)
+
+        browse_url = launch.url + "directories?path=" + quote(str(root))
+        with urllib.request.urlopen(browse_url, timeout=2) as response:
+            payload = json.load(response)
+            assert payload["path"] == str(root)
+            assert {item["name"] for item in payload["directories"]} >= {
+                "dev",
+                "test",
+                "stage",
+                "prod",
+            }
+
+        request = urllib.request.Request(
+            launch.url + "comparison",
+            data=json.dumps(
+                {
+                    "source": str(next_source),
+                    "target": str(next_target),
+                    "persist": False,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.load(response)
+            assert payload == {
+                "ok": True,
+                "source": str(next_source),
+                "target": str(next_target),
+                "fileCount": 1,
+                "persisted": False,
+            }
+
+        with urllib.request.urlopen(launch.url, timeout=2) as response:
+            page = response.read().decode("utf-8")
+            assert "second.yaml" in page
+            assert str(next_source) in page
+            assert str(next_target) in page
+            assert "Change comparison" in page
+
+        persist_request = urllib.request.Request(
+            launch.url + "comparison",
+            data=json.dumps(
+                {
+                    "source": str(next_source),
+                    "target": str(next_target),
+                    "persist": True,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(persist_request, timeout=5) as response:
+            payload = json.load(response)
+            assert payload["persisted"] is True
+        assert load_project_path_settings(root / ".config-review.yaml") == (
+            ".",
+            "stage",
+            "prod",
+        )
+
+        invalid_request = urllib.request.Request(
+            launch.url + "comparison",
+            data=json.dumps(
+                {
+                    "source": str(root / "missing"),
+                    "target": str(next_target),
+                    "persist": False,
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(invalid_request, timeout=2)
+        assert exc_info.value.code == 400
+        error = json.loads(exc_info.value.read().decode("utf-8"))
+        assert "Directory does not exist" in error["error"]
     finally:
         viewer.stop()
