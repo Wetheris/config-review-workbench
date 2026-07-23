@@ -854,16 +854,9 @@ def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
     file_data = snapshot["files"][0]
     path = file_data["contextPath"]
 
-    assert path["sourceEnvironment"] == {
-        "text": "alpha",
-        "contextRefs": ["alpha-environment"],
-        "contextSuggestion": {
-            "type": "path-segment",
-            "value": "alpha",
-            "files": [],
-            "title": "alpha",
-        },
-    }
+    assert path["sourceEnvironment"]["text"] == "alpha"
+    assert path["sourceEnvironment"]["contextRefs"] == ["alpha-environment"]
+    assert path["sourceEnvironment"]["contextTargets"][0]["text"] == "alpha"
     assert path["targetEnvironment"]["contextRefs"] == ["test-ot-environment"]
     assert [part["text"] for part in path["parts"]] == ["ms", "config", "values.yaml"]
     assert path["parts"][0]["contextRefs"] == ["mission-support-path"]
@@ -874,11 +867,18 @@ def test_snapshot_builds_segmented_context_path_and_undocumented_key_suggestion(
         line for line in file_data["raw"]["lines"] if "customSetting:" in line["text"]
     )
     assert custom_line["contextRefs"] == []
-    assert custom_line["contextSuggestion"] == {
-        "type": "yaml-key",
+    key_target = next(
+        target for target in custom_line["contextTargets"] if target["text"] == "customSetting"
+    )
+    assert key_target["contextSuggestion"] == {
+        "type": "yaml-path",
         "value": "customSetting",
         "files": ["ms/config/values.yaml"],
         "title": "customSetting",
+        "clickedType": "YAML key",
+        "clickedValue": "customSetting",
+        "yamlPath": "customSetting",
+        "file": "ms/config/values.yaml",
     }
 
 

@@ -4,9 +4,9 @@ The web diff viewer includes a searchable context dictionary for E-IDS services,
 libraries, Helm packaging, GitLab CI/CD, GitOps, identity, selected FAA acronyms, and common
 operational terms.
 
-Select the `?` button in the web toolbar to turn context help on. Recognized YAML lines and
-individual file-path segments receive a subtle hover indicator. Hover or keyboard-focus an item
-for a short explanation. Select it to open the full dictionary entry.
+Select the `?` button in the web toolbar to turn context help on. Recognized YAML keys, value
+terms, and individual file-path segments receive a subtle hover indicator. Hover or keyboard-focus
+one highlighted term for a short explanation. Select it to open the full dictionary entry.
 
 The current file is shown as a segmented breadcrumb, for example:
 
@@ -14,14 +14,16 @@ The current file is shown as a segmented breadcrumb, for example:
 alpha → test-ot / ms / config / values.yaml
 ```
 
-Each environment, directory, and file-name segment can have its own definition. This lets a new
-reviewer learn what `alpha`, `ms`, `config`, or `values.yaml` means without treating the entire
-path as one glossary term.
+Each environment, directory, and file-name segment can have its own definition. Compound file
+names are split into useful targets while known compound terms are kept together. For example,
+`keycloak-helm-repo.yaml` can expose separate definitions for `keycloak`, `helm-repo`, and
+`yaml`.
 
 ## Adding and editing definitions in the web viewer
 
-When context help is enabled, an undocumented YAML key or path segment uses a dashed hover
-indicator. Select it to open an **Add context definition** form with a suggested matching rule.
+When context help is enabled, undocumented YAML keys, scalar-value terms, or path segments use a
+dashed hover indicator. Select one to open an **Add context definition** form. The form shows the
+clicked item type, exact value, file, and dotted YAML path when available.
 
 For an existing entry, open its dictionary details and select **Edit definition**. Built-in
 entries use **Override definition** because bundled definitions are not modified directly. The
@@ -31,8 +33,8 @@ project-specific replacement is written to:
 .config-review-context.yaml
 ```
 
-The editor supports definitions for path segments, file names, YAML keys and values, environment
-variable names, commands, terms, and path patterns. Saving reloads the current browser snapshot
+The editor supports definitions for path segments, file names, exact YAML paths, YAML keys and
+values, environment variable names, commands, terms, and path patterns. Saving reloads the current browser snapshot
 so the new matching rule is immediately applied. Unsaved reviewer notes are protected by a
 confirmation prompt before that reload.
 
@@ -59,6 +61,7 @@ Matching is intentionally conservative. The implementation supports:
 | Match type | Behavior |
 |---|---|
 | `term` | Matches a complete term while accepting spaces, hyphens, underscores, dots, or slashes between words |
+| `yaml-path` | Matches a dotted YAML path such as `spec.chart.spec.sourceRef.kind` |
 | `yaml-key` | Matches the exact YAML key before `:` |
 | `yaml-value` | Matches the complete scalar value after `:` |
 | `env-name` | Matches a Kubernetes-style `- name: VALUE` environment variable declaration |
@@ -70,6 +73,18 @@ Matching is intentionally conservative. The implementation supports:
 Rules may include `files` globs. The built-in GitLab keywords use file restrictions so a generic
 key such as `include` is documented in pipeline files without appearing on unrelated application
 YAML.
+
+A single line can contain multiple independent targets. Matching is applied in this order:
+
+1. Exact YAML path
+2. Exact YAML key or complete scalar value
+3. Known compound term
+4. Known individual term
+5. Addable fallback token
+
+For example, `apiVersion: source.toolkit.fluxcd.io/v1` exposes `apiVersion`,
+`source.toolkit.fluxcd.io`, and `v1` separately. A broad entry such as `keycloak` highlights only
+that word inside a URL or file name instead of claiming the entire string.
 
 Path-only definitions are intentionally not attached to every YAML line inside that path. They
 appear only on the relevant breadcrumb segment, which keeps context highlighting precise.

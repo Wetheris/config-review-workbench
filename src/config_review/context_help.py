@@ -26,11 +26,29 @@ _SUPPORTED_MATCH_TYPES = {
     "path-segment",
     "term",
     "yaml-key",
+    "yaml-path",
     "yaml-value",
 }
 _ENV_NAME_RE = re.compile(r"^\s*-\s*name\s*:\s*(?P<value>.*?)\s*$", re.IGNORECASE)
 _YAML_ASSIGNMENT_RE = re.compile(
-    r"^\s*(?:-\s*)?[\"']?(?P<key>[A-Za-z0-9_.-]+)[\"']?\s*:\s*(?P<value>.*)$"
+    r"^(?P<indent>\s*)(?P<dash>-\s*)?(?P<quote>[\"']?)"
+    r"(?P<key>[A-Za-z0-9_.$/-]+)(?P=quote)(?P<separator>\s*:\s*)(?P<value>.*)$"
+)
+_CONTEXT_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*|v\d+(?:alpha\d*|beta\d*)?", re.IGNORECASE)
+_CONTEXT_SKIP_TOKENS = {
+    "false",
+    "no",
+    "none",
+    "null",
+    "off",
+    "on",
+    "true",
+    "yes",
+}
+_CONTEXT_SENSITIVE_KEY_RE = re.compile(
+    r"(?:^|[_.-])(?:password|passwd|passphrase|token|secret|api.?key|private.?key|"
+    r"access.?key|credential|authorization|certificate|keystore|truststore)(?:$|[_.-])",
+    re.IGNORECASE,
 )
 
 
@@ -164,6 +182,40 @@ class ContextCatalog:
                 if len(matches) >= limit:
                     break
         return matches
+
+    def line_targets(
+        self,
+        relative_path: str,
+        text: str,
+        *,
+        yaml_path: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return non-overlapping context targets for one rendered line."""
+        return _context_targets_for_text(
+            self,
+            relative_path,
+            text,
+            yaml_path=yaml_path,
+            path_part=False,
+            is_filename=False,
+        )
+
+    def path_part_targets(
+        self,
+        relative_path: str,
+        text: str,
+        *,
+        is_filename: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return independent targets inside one visible path breadcrumb part."""
+        return _context_targets_for_text(
+            self,
+            relative_path,
+            text,
+            yaml_path=None,
+            path_part=True,
+            is_filename=is_filename,
+        )
 
 
 def _safe_yaml() -> Any:
@@ -307,29 +359,40 @@ def context_edit_path(config_file: Path) -> Path:
     return config_file.expanduser().resolve().parent / _CONTEXT_FILENAME
 
 
-def context_line_suggestion(relative_path: str, text: str) -> dict[str, Any] | None:
-    """Suggest a conservative rule for an undocumented rendered YAML line."""
+def context_line_suggestion(
+    relative_path: str,
+    text: str,
+    *,
+    yaml_path: str | None = None,
+) -> dict[str, Any] | None:
+    """Suggest a precise rule for an undocumented rendered YAML key."""
     env_name = _ENV_NAME_RE.match(text)
     if env_name is not None:
         value = _strip_scalar(env_name.group("value"))
         if value:
-            return {
-                "type": "env-name",
-                "value": value,
-                "files": [relative_path],
-                "title": value,
-            }
+            return _context_suggestion(
+                match_type="env-name",
+                value=value,
+                title=value,
+                relative_path=relative_path,
+                clicked_type="Environment variable name",
+                clicked_value=value,
+                yaml_path=yaml_path,
+            )
 
     assignment = _YAML_ASSIGNMENT_RE.match(text)
     if assignment is None:
         return None
     key = assignment.group("key")
-    return {
-        "type": "yaml-key",
-        "value": key,
-        "files": [relative_path],
-        "title": key,
-    }
+    return _context_suggestion(
+        match_type="yaml-path" if yaml_path else "yaml-key",
+        value=yaml_path or key,
+        title=key,
+        relative_path=relative_path,
+        clicked_type="YAML key",
+        clicked_value=key,
+        yaml_path=yaml_path,
+    )
 
 
 def context_path_part_payload(
@@ -339,22 +402,52 @@ def context_path_part_payload(
     *,
     is_filename: bool = False,
 ) -> dict[str, Any]:
-    """Build one path breadcrumb with matches and an add-definition suggestion."""
+    """Build one path breadcrumb with independently clickable targets."""
     match_type = "file-name" if is_filename else "path-segment"
+    targets = catalog.path_part_targets(
+        relative_path,
+        segment,
+        is_filename=is_filename,
+    )
+    refs = _unique(ref for target in targets for ref in target.get("contextRefs", []))
+    suggestion = _context_suggestion(
+        match_type=match_type,
+        value=segment,
+        title=segment,
+        relative_path=relative_path,
+        clicked_type="File name" if is_filename else "Path segment",
+        clicked_value=segment,
+    )
+    suggestion["files"] = []
     return {
         "text": segment,
-        "contextRefs": catalog.match_path_segment(
-            relative_path,
-            segment,
-            is_filename=is_filename,
-        ),
-        "contextSuggestion": {
-            "type": match_type,
-            "value": segment,
-            "files": [],
-            "title": segment,
-        },
+        "contextRefs": refs,
+        "contextSuggestion": suggestion,
+        "contextTargets": targets,
     }
+
+
+def yaml_paths_by_line(text: str) -> dict[int, str]:
+    """Return a conservative dotted YAML path for mapping-key lines."""
+    result: dict[int, str] = {}
+    stack: list[tuple[int, str]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        assignment = _YAML_ASSIGNMENT_RE.match(line)
+        if assignment is None:
+            continue
+        indent = len(assignment.group("indent").replace("\t", "    "))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        key = assignment.group("key")
+        path = ".".join([item[1] for item in stack] + [key])
+        result[line_number] = path
+        value = assignment.group("value").strip()
+        if not value or value in {"|", ">", "|-", "|+", ">-", ">+"}:
+            stack.append((indent, key))
+    return result
 
 
 def _entry_document(entry: ContextEntry) -> dict[str, Any]:
@@ -457,7 +550,13 @@ def _term_pattern(value: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9])", re.IGNORECASE)
 
 
-def _rule_matches(rule: ContextMatchRule, relative_path: str, text: str) -> bool:
+def _rule_matches(
+    rule: ContextMatchRule,
+    relative_path: str,
+    text: str,
+    *,
+    yaml_path: str | None = None,
+) -> bool:
     if not _file_allowed(rule.files, relative_path):
         return False
 
@@ -469,6 +568,10 @@ def _rule_matches(rule: ContextMatchRule, relative_path: str, text: str) -> bool
         return any(part.casefold() == rule.value.casefold() for part in Path(normalized).parts)
     if rule.type == "file-name":
         return Path(relative_path).name.lower() == rule.value.lower()
+    if rule.type == "yaml-path":
+        return yaml_path is not None and fnmatch.fnmatch(
+            yaml_path.casefold(), rule.value.casefold()
+        )
     if rule.type == "term":
         return bool(_term_pattern(rule.value).search(text))
     if rule.type == "command":
@@ -489,3 +592,498 @@ def _rule_matches(rule: ContextMatchRule, relative_path: str, text: str) -> bool
             and _strip_scalar(env_name.group("value")).lower() == rule.value.lower()
         )
     return False
+
+
+def _unique(values: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def _context_suggestion(
+    *,
+    match_type: str,
+    value: str,
+    title: str,
+    relative_path: str,
+    clicked_type: str,
+    clicked_value: str,
+    yaml_path: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": match_type,
+        "value": value,
+        "files": [relative_path] if relative_path else [],
+        "title": title,
+        "clickedType": clicked_type,
+        "clickedValue": clicked_value,
+        "yamlPath": yaml_path,
+        "file": relative_path,
+    }
+
+
+def _matching_ids(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    *,
+    rule_types: set[str],
+    yaml_path: str | None = None,
+) -> list[str]:
+    result: list[str] = []
+    for entry in catalog.entries:
+        if any(
+            rule.type in rule_types
+            and _rule_matches(
+                rule,
+                relative_path,
+                text,
+                yaml_path=yaml_path,
+            )
+            for rule in entry.matches
+        ):
+            result.append(entry.id)
+    return result
+
+
+def _term_candidates(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    *,
+    start: int = 0,
+    end: int | None = None,
+) -> list[tuple[int, int, str]]:
+    end = len(text) if end is None else end
+    window = text[start:end]
+    candidates: list[tuple[int, int, str]] = []
+    for entry in catalog.entries:
+        for rule in entry.matches:
+            if rule.type not in {"term", "command"}:
+                continue
+            if not _file_allowed(rule.files, relative_path):
+                continue
+            if rule.type == "term":
+                found = _term_pattern(rule.value).finditer(window)
+                for match in found:
+                    candidates.append((start + match.start(), start + match.end(), entry.id))
+            else:
+                needle = rule.value.casefold()
+                folded = window.casefold()
+                offset = 0
+                while True:
+                    index = folded.find(needle, offset)
+                    if index < 0:
+                        break
+                    candidates.append((start + index, start + index + len(rule.value), entry.id))
+                    offset = index + max(1, len(rule.value))
+    return candidates
+
+
+def _select_term_spans(
+    candidates: Iterable[tuple[int, int, str]],
+) -> list[tuple[int, int, list[str]]]:
+    grouped: dict[tuple[int, int], list[str]] = {}
+    for start, end, entry_id in candidates:
+        grouped.setdefault((start, end), []).append(entry_id)
+    ordered = sorted(
+        grouped.items(),
+        key=lambda item: (-(item[0][1] - item[0][0]), item[0][0]),
+    )
+    selected: list[tuple[int, int, list[str]]] = []
+    for (start, end), ids in ordered:
+        overlaps = any(
+            start < chosen_end and end > chosen_start for chosen_start, chosen_end, _ in selected
+        )
+        if overlaps:
+            continue
+        selected.append((start, end, _unique(ids)))
+    selected.sort(key=lambda item: item[0])
+    return selected
+
+
+def _scalar_content_span(
+    text: str,
+    assignment: re.Match[str],
+) -> tuple[int, int] | None:
+    raw_start = assignment.start("value")
+    raw = assignment.group("value")
+    leading = len(raw) - len(raw.lstrip())
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    comment = re.search(r"\s+#", stripped)
+    if comment is not None:
+        stripped = stripped[: comment.start()].rstrip()
+    if stripped.endswith(","):
+        stripped = stripped[:-1].rstrip()
+    quote = (
+        stripped[0]
+        if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {"'", '"'}
+        else ""
+    )
+    start = raw_start + leading + (1 if quote else 0)
+    end = start + len(stripped) - (2 if quote else 0)
+    return (start, end) if end > start else None
+
+
+def _generic_token_targets(
+    text: str,
+    *,
+    start: int,
+    end: int,
+    occupied: Sequence[tuple[int, int]],
+    relative_path: str,
+    yaml_path: str | None,
+    clicked_type: str,
+    match_type: str,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for match in _CONTEXT_TOKEN_RE.finditer(text, start, end):
+        token = match.group(0)
+        if token.casefold() in _CONTEXT_SKIP_TOKENS:
+            continue
+        if len(token) < 2 and not re.fullmatch(r"v\d+", token, re.IGNORECASE):
+            continue
+        token_start, token_end = match.span()
+        overlaps = any(
+            token_start < used_end and token_end > used_start for used_start, used_end in occupied
+        )
+        if overlaps:
+            continue
+        result.append(
+            {
+                "start": token_start,
+                "end": token_end,
+                "text": text[token_start:token_end],
+                "contextRefs": [],
+                "contextSuggestion": _context_suggestion(
+                    match_type=match_type,
+                    value=token,
+                    title=token,
+                    relative_path=relative_path,
+                    clicked_type=clicked_type,
+                    clicked_value=token,
+                    yaml_path=yaml_path,
+                ),
+            }
+        )
+    return result
+
+
+def _target(
+    text: str,
+    start: int,
+    end: int,
+    refs: Sequence[str],
+    suggestion: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "start": start,
+        "end": end,
+        "text": text[start:end],
+        "contextRefs": list(refs),
+        "contextSuggestion": dict(suggestion),
+    }
+
+
+def _path_part_targets(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    *,
+    is_filename: bool,
+) -> list[dict[str, Any]]:
+    exact_refs = catalog.match_path_segment(
+        relative_path,
+        text,
+        is_filename=is_filename,
+        limit=max(4, len(catalog.entries)),
+    )
+    exact_type = "file-name" if is_filename else "path-segment"
+    clicked_type = "File name" if is_filename else "Path segment"
+    if exact_refs:
+        suggestion = _context_suggestion(
+            match_type=exact_type,
+            value=text,
+            title=text,
+            relative_path=relative_path,
+            clicked_type=clicked_type,
+            clicked_value=text,
+        )
+        suggestion["files"] = []
+        return [_target(text, 0, len(text), exact_refs, suggestion)]
+
+    targets: list[dict[str, Any]] = []
+    term_spans = _select_term_spans(_term_candidates(catalog, relative_path, text))
+    for start, end, refs in term_spans:
+        suggestion = _context_suggestion(
+            match_type="term",
+            value=text[start:end],
+            title=text[start:end],
+            relative_path=relative_path,
+            clicked_type="File-name term" if is_filename else "Path term",
+            clicked_value=text[start:end],
+        )
+        targets.append(_target(text, start, end, refs, suggestion))
+
+    occupied = [(item["start"], item["end"]) for item in targets]
+    targets.extend(
+        _generic_token_targets(
+            text,
+            start=0,
+            end=len(text),
+            occupied=occupied,
+            relative_path=relative_path,
+            yaml_path=None,
+            clicked_type="File-name term" if is_filename else "Path segment",
+            match_type="term" if is_filename else "path-segment",
+        )
+    )
+    return sorted(targets, key=lambda item: item["start"])
+
+
+def _unstructured_targets(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    for start, end, refs in _select_term_spans(_term_candidates(catalog, relative_path, text)):
+        suggestion = _context_suggestion(
+            match_type="term",
+            value=text[start:end],
+            title=text[start:end],
+            relative_path=relative_path,
+            clicked_type="Term",
+            clicked_value=text[start:end],
+        )
+        targets.append(_target(text, start, end, refs, suggestion))
+    return targets
+
+
+def _yaml_key_targets(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    assignment: re.Match[str],
+    yaml_path: str | None,
+) -> list[dict[str, Any]]:
+    key = assignment.group("key")
+    key_start, key_end = assignment.span("key")
+    exact_refs = _unique(
+        [
+            *_matching_ids(
+                catalog,
+                relative_path,
+                text,
+                rule_types={"yaml-path"},
+                yaml_path=yaml_path,
+            ),
+            *_matching_ids(
+                catalog,
+                relative_path,
+                text,
+                rule_types={"yaml-key"},
+            ),
+        ]
+    )
+    exact_suggestion = _context_suggestion(
+        match_type="yaml-path" if yaml_path else "yaml-key",
+        value=yaml_path or key,
+        title=key,
+        relative_path=relative_path,
+        clicked_type="YAML key",
+        clicked_value=key,
+        yaml_path=yaml_path,
+    )
+    if exact_refs:
+        return [_target(text, key_start, key_end, exact_refs, exact_suggestion)]
+
+    targets: list[dict[str, Any]] = []
+    candidates = _term_candidates(
+        catalog,
+        relative_path,
+        text,
+        start=key_start,
+        end=key_end,
+    )
+    for start, end, refs in _select_term_spans(candidates):
+        suggestion = _context_suggestion(
+            match_type="term",
+            value=text[start:end],
+            title=text[start:end],
+            relative_path=relative_path,
+            clicked_type="YAML key term",
+            clicked_value=text[start:end],
+            yaml_path=yaml_path,
+        )
+        targets.append(_target(text, start, end, refs, suggestion))
+
+    if not targets:
+        return [_target(text, key_start, key_end, [], exact_suggestion)]
+
+    occupied = [(item["start"], item["end"]) for item in targets]
+    targets.extend(
+        _generic_token_targets(
+            text,
+            start=key_start,
+            end=key_end,
+            occupied=occupied,
+            relative_path=relative_path,
+            yaml_path=yaml_path,
+            clicked_type="YAML key term",
+            match_type="term",
+        )
+    )
+    return sorted(targets, key=lambda item: item["start"])
+
+
+def _exact_yaml_value_target(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    value_start: int,
+    value_end: int,
+    yaml_path: str | None,
+) -> dict[str, Any] | None:
+    refs = _matching_ids(
+        catalog,
+        relative_path,
+        text,
+        rule_types={"yaml-value", "env-name"},
+    )
+    if not refs:
+        return None
+    scalar = text[value_start:value_end]
+    suggestion = _context_suggestion(
+        match_type="yaml-value",
+        value=scalar,
+        title=scalar,
+        relative_path=relative_path,
+        clicked_type="YAML value",
+        clicked_value=scalar,
+        yaml_path=yaml_path,
+    )
+    return _target(text, value_start, value_end, refs, suggestion)
+
+
+def _yaml_value_term_targets(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    *,
+    value_start: int,
+    value_end: int,
+    yaml_path: str | None,
+) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    candidates = _term_candidates(
+        catalog,
+        relative_path,
+        text,
+        start=value_start,
+        end=value_end,
+    )
+    for start, end, refs in _select_term_spans(candidates):
+        suggestion = _context_suggestion(
+            match_type="term",
+            value=text[start:end],
+            title=text[start:end],
+            relative_path=relative_path,
+            clicked_type="YAML value term",
+            clicked_value=text[start:end],
+            yaml_path=yaml_path,
+        )
+        targets.append(_target(text, start, end, refs, suggestion))
+    return targets
+
+
+def _yaml_targets(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    assignment: re.Match[str],
+    yaml_path: str | None,
+) -> list[dict[str, Any]]:
+    key = assignment.group("key")
+    targets = _yaml_key_targets(
+        catalog,
+        relative_path,
+        text,
+        assignment,
+        yaml_path,
+    )
+    scalar_span = _scalar_content_span(text, assignment)
+    if scalar_span is None:
+        return targets
+
+    value_start, value_end = scalar_span
+    exact_value = _exact_yaml_value_target(
+        catalog,
+        relative_path,
+        text,
+        value_start,
+        value_end,
+        yaml_path,
+    )
+    if exact_value is not None:
+        targets.append(exact_value)
+        return sorted(targets, key=lambda item: item["start"])
+
+    targets.extend(
+        _yaml_value_term_targets(
+            catalog,
+            relative_path,
+            text,
+            value_start=value_start,
+            value_end=value_end,
+            yaml_path=yaml_path,
+        )
+    )
+    if not _CONTEXT_SENSITIVE_KEY_RE.search(key):
+        occupied = [(item["start"], item["end"]) for item in targets]
+        targets.extend(
+            _generic_token_targets(
+                text,
+                start=value_start,
+                end=value_end,
+                occupied=occupied,
+                relative_path=relative_path,
+                yaml_path=yaml_path,
+                clicked_type="YAML value term",
+                match_type="term",
+            )
+        )
+    return sorted(targets, key=lambda item: item["start"])
+
+
+def _context_targets_for_text(
+    catalog: ContextCatalog,
+    relative_path: str,
+    text: str,
+    *,
+    yaml_path: str | None,
+    path_part: bool,
+    is_filename: bool,
+) -> list[dict[str, Any]]:
+    if path_part:
+        return _path_part_targets(
+            catalog,
+            relative_path,
+            text,
+            is_filename=is_filename,
+        )
+
+    assignment = _YAML_ASSIGNMENT_RE.match(text)
+    if assignment is None:
+        return _unstructured_targets(catalog, relative_path, text)
+    return _yaml_targets(
+        catalog,
+        relative_path,
+        text,
+        assignment,
+        yaml_path,
+    )

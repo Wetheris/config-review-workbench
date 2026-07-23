@@ -35,6 +35,7 @@ from .context_help import (
     context_line_suggestion,
     context_path_part_payload,
     load_context_catalog,
+    yaml_paths_by_line,
     upsert_context_entry,
 )
 from .core import (
@@ -80,6 +81,7 @@ class _ContextGapSnapshot:
     private_lines: tuple[str, ...] = ()
     context_refs: tuple[tuple[str, ...], ...] = ()
     context_suggestions: tuple[dict[str, Any] | None, ...] = ()
+    context_targets: tuple[tuple[dict[str, Any], ...], ...] = ()
 
 
 ContextLookup = dict[str, _ContextGapSnapshot]
@@ -433,9 +435,11 @@ def _display_lines_payload(
     lines: Sequence[DisplayLine],
     redactor: _PrivacyRedactor,
     context_catalog: ContextCatalog,
-    relative_path: str,
+    record: FileRecord,
 ) -> list[dict[str, Any]]:
     private_lines = redactor.redact_lines([line.text for line in lines])
+    test_paths = yaml_paths_by_line(record.test_text)
+    dev_paths = yaml_paths_by_line(record.dev_text)
     for index, line in enumerate(lines):
         if line.kind in {"test_file_header", "dev_file_header", "file_header"}:
             private_lines[index] = redactor.redact_path(line.text)
@@ -447,19 +451,47 @@ def _display_lines_payload(
                 if category
                 else "▼ FILTERED DIFF · [REDACTED]"
             )
-    return [
-        {
-            "text": line.text,
-            "privateText": private_text,
-            "kind": line.kind,
-            "testLine": line.test_line,
-            "devLine": line.dev_line,
-            "emphasisRanges": [list(item) for item in line.emphasis_ranges],
-            "contextRefs": context_catalog.match_line(relative_path, line.text),
-            "contextSuggestion": context_line_suggestion(relative_path, line.text),
-        }
-        for line, private_text in zip(lines, private_lines, strict=True)
-    ]
+
+    result: list[dict[str, Any]] = []
+    for line, private_text in zip(lines, private_lines, strict=True):
+        yaml_path = None
+        if line.dev_line is not None:
+            yaml_path = dev_paths.get(line.dev_line)
+        if yaml_path is None and line.test_line is not None:
+            yaml_path = test_paths.get(line.test_line)
+        targets = context_catalog.line_targets(
+            record.relative_path,
+            line.text,
+            yaml_path=yaml_path,
+        )
+        refs: list[str] = []
+        suggestion = None
+        for target in targets:
+            for entry_id in target.get("contextRefs", []):
+                if entry_id not in refs:
+                    refs.append(entry_id)
+            if suggestion is None and not target.get("contextRefs"):
+                suggestion = target.get("contextSuggestion")
+        result.append(
+            {
+                "text": line.text,
+                "privateText": private_text,
+                "kind": line.kind,
+                "testLine": line.test_line,
+                "devLine": line.dev_line,
+                "emphasisRanges": [list(item) for item in line.emphasis_ranges],
+                "yamlPath": yaml_path,
+                "contextTargets": targets,
+                "contextRefs": refs,
+                "contextSuggestion": suggestion
+                or context_line_suggestion(
+                    record.relative_path,
+                    line.text,
+                    yaml_path=yaml_path,
+                ),
+            }
+        )
+    return result
 
 
 def _presentation_preserves_physical_order(presentation: DiffPresentation) -> bool:
@@ -649,7 +681,7 @@ def _presentation_payload(
         presentation.lines,
         redactor,
         context_catalog,
-        record.relative_path,
+        record,
     )
     context_gaps = _timeline_context_gaps(
         record,
@@ -733,6 +765,7 @@ def _timeline_context_gaps(
     """Find omitted aligned unchanged ranges in a physical web timeline."""
     test_lines = record.test_text.splitlines()
     dev_lines = record.dev_text.splitlines()
+    test_paths = yaml_paths_by_line(record.test_text)
     consumed_test = 0
     consumed_dev = 0
     gaps: list[dict[str, Any]] = []
@@ -761,7 +794,22 @@ def _timeline_context_gaps(
                     for value in values
                 ),
                 context_suggestions=tuple(
-                    context_line_suggestion(record.relative_path, value) for value in values
+                    context_line_suggestion(
+                        record.relative_path,
+                        value,
+                        yaml_path=test_paths.get(consumed_test + index + 1),
+                    )
+                    for index, value in enumerate(values)
+                ),
+                context_targets=tuple(
+                    tuple(
+                        context_catalog.line_targets(
+                            record.relative_path,
+                            value,
+                            yaml_path=test_paths.get(consumed_test + index + 1),
+                        )
+                    )
+                    for index, value in enumerate(values)
                 ),
             ),
         )
@@ -1358,6 +1406,11 @@ def _context_gap_payload(
         if snapshot.context_suggestions
         else tuple(None for _item in selected)
     )
+    targets_selected = (
+        snapshot.context_targets[offset : offset + count]
+        if snapshot.context_targets
+        else tuple(() for _item in selected)
+    )
     return {
         "edge": edge,
         "count": count,
@@ -1372,6 +1425,11 @@ def _context_gap_payload(
                 "kind": "context",
                 "emphasisRanges": [],
                 "contextRefs": list(context_selected[index]),
+                **(
+                    {"contextTargets": list(targets_selected[index])}
+                    if targets_selected[index]
+                    else {}
+                ),
                 **(
                     {"contextSuggestion": suggestion_selected[index]}
                     if suggestion_selected[index] is not None
@@ -1940,18 +1998,24 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: #fff !important;
 }
 .context-available, .context-missing { position: relative; }
+.context-token {
+  display: inline;
+  border-radius: 3px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
 .context-help-mode .context-available { cursor: help; }
 .context-help-mode .context-missing { cursor: copy; }
-.context-help-mode .line .code.context-available:hover,
-.context-help-mode .line .code.context-available:focus-visible,
+.context-help-mode .context-token.context-available:hover,
+.context-help-mode .context-token.context-available:focus-visible,
 .context-help-mode .path-part.context-available:hover,
 .context-help-mode .path-part.context-available:focus-visible {
   outline: 1px dotted var(--accent);
   outline-offset: 1px;
   background: var(--accentbg);
 }
-.context-help-mode .line .code.context-missing:hover,
-.context-help-mode .line .code.context-missing:focus-visible,
+.context-help-mode .context-token.context-missing:hover,
+.context-help-mode .context-token.context-missing:focus-visible,
 .context-help-mode .path-part.context-missing:hover,
 .context-help-mode .path-part.context-missing:focus-visible {
   outline: 1px dashed var(--muted);
@@ -2645,6 +2709,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
           <select id="contextMatchType">
             <option value="path-segment">Path segment</option>
             <option value="file-name">File name</option>
+            <option value="yaml-path">Exact YAML path</option>
             <option value="yaml-key">YAML key</option>
             <option value="yaml-value">YAML value</option>
             <option value="env-name">Environment variable name</option>
@@ -2660,6 +2725,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
         <div class="context-editor-field full">
           <label for="contextMatchFiles">Limit to files (comma separated, optional)</label>
           <input id="contextMatchFiles" type="text" spellcheck="false" placeholder="Example: **/values.yaml, ms/config/*">
+          <div id="contextMatchContext" class="context-editor-help"></div>
           <div class="context-editor-help">Definitions are saved to <span id="contextEditFile"></span>. Editing a built-in entry creates a project-local override.</div>
         </div>
       </div>
@@ -3033,6 +3099,13 @@ function openContextEditor({entry = null, suggestion = null} = {}) {
   $('contextMatchType').value = match.type ?? 'term';
   $('contextMatchValue').value = match.value ?? '';
   $('contextMatchFiles').value = (match.files ?? []).join(', ');
+  const matchContext = [
+    match.clickedType ? `Type: ${match.clickedType}` : '',
+    match.clickedValue ? `Value: ${match.clickedValue}` : '',
+    match.yamlPath ? `YAML path: ${match.yamlPath}` : '',
+    match.file ? `File: ${match.file}` : '',
+  ].filter(Boolean);
+  $('contextMatchContext').textContent = matchContext.join(' · ');
   $('contextEditFile').textContent = contextEditFilePath;
   $('contextEditorError').textContent = '';
   $('contextModal').hidden = true;
@@ -3228,7 +3301,7 @@ function toggleContextHelpMode() {
   applyContextHelpMode();
   setStatus(
     contextHelpMode
-      ? 'CONTEXT HELP ON · hover highlighted configuration lines for definitions · click for full details'
+      ? 'CONTEXT HELP ON · hover highlighted keys, values, and path terms · click for full details'
       : defaultStatus(),
     contextHelpMode ? 'busy' : '',
   );
@@ -3413,7 +3486,7 @@ function defaultStatus() {
     return 'PRIVACY MODE · display and exports are redacted · original values remain inside this local page';
   }
   if (contextHelpMode) {
-    return 'CONTEXT HELP ON · hover highlighted configuration lines for definitions · click for full details';
+    return 'CONTEXT HELP ON · hover highlighted keys, values, and path terms · click for full details';
   }
   return `Snapshot ${snapshot.generatedAt} · ${snapshot.gitStatus} · ${snapshot.gitLinks.status} · review state is temporary until exported`;
 }
@@ -3447,6 +3520,44 @@ function appendHighlightedText(host, text, ranges = []) {
   }
   if (cursor < text.length) host.append(document.createTextNode(text.slice(cursor)));
 }
+
+function appendHighlightedSlice(host, text, ranges, start, end) {
+  const adjusted = [];
+  for (const item of ranges ?? []) {
+    const rangeStart = Math.max(start, Number(item?.[0] ?? 0));
+    const rangeEnd = Math.min(end, Number(item?.[1] ?? 0));
+    if (rangeEnd > rangeStart) adjusted.push([rangeStart - start, rangeEnd - start]);
+  }
+  appendHighlightedText(host, text.slice(start, end), adjusted);
+}
+
+function appendContextualText(host, text, ranges = [], targets = []) {
+  const ordered = (targets ?? [])
+    .map(target => ({
+      ...target,
+      start: Math.max(0, Math.min(text.length, Number(target?.start ?? 0))),
+      end: Math.max(0, Math.min(text.length, Number(target?.end ?? 0))),
+    }))
+    .filter(target => target.end > target.start)
+    .sort((left, right) => left.start - right.start || right.end - left.end);
+  let cursor = 0;
+  for (const target of ordered) {
+    if (target.start < cursor) continue;
+    if (target.start > cursor) appendHighlightedSlice(host, text, ranges, cursor, target.start);
+    const token = document.createElement('span');
+    token.className = 'context-token';
+    appendHighlightedSlice(token, text, ranges, target.start, target.end);
+    decorateContextTarget(
+      token,
+      target.contextRefs ?? [],
+      target.contextSuggestion ?? null,
+    );
+    host.append(token);
+    cursor = target.end;
+  }
+  if (cursor < text.length) appendHighlightedSlice(host, text, ranges, cursor, text.length);
+}
+
 
 function lineNumberElement(value, baseUrl, label) {
   const cell = document.createElement('div');
@@ -3489,12 +3600,17 @@ function lineElement(line) {
   prefix.textContent = prefixFor(line.kind);
   const code = document.createElement('div');
   code.className = 'code';
-  appendHighlightedText(
-    code,
-    displayLineText(line),
-    privacyMode ? [] : (line.emphasisRanges ?? []),
-  );
-  if (!privacyMode) decorateContextTarget(code, line.contextRefs ?? [], line.contextSuggestion ?? null);
+  const shownText = displayLineText(line);
+  if (privacyMode) {
+    appendHighlightedText(code, shownText, []);
+  } else {
+    appendContextualText(
+      code,
+      shownText,
+      line.emphasisRanges ?? [],
+      line.contextTargets ?? [],
+    );
+  }
   row.append(tl, dl, prefix, code);
   return row;
 }
@@ -4074,8 +4190,13 @@ function appendFocusedLines(host, view) {
 function pathPartElement(part) {
   const element = document.createElement('span');
   element.className = 'path-part';
-  element.textContent = part?.text ?? '';
-  if (!privacyMode) {
+  const text = part?.text ?? '';
+  if (privacyMode) {
+    element.textContent = text;
+  } else if (part?.contextTargets?.length) {
+    appendContextualText(element, text, [], part.contextTargets);
+  } else {
+    element.textContent = text;
     decorateContextTarget(
       element,
       part?.contextRefs ?? [],

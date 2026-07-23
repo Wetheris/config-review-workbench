@@ -1027,6 +1027,8 @@ entries:
     matches:
       - type: term
         value: OpenShift Route
+      - type: yaml-value
+        value: Route
       - type: term
         value: 'kind: Route'
   - id: quarkus
@@ -1135,6 +1137,66 @@ entries:
         value: retention-days
       - type: yaml-key
         value: retention
+  - id: kubernetes-api-version-key
+    title: apiVersion
+    category: Kubernetes Resources
+    summary: Identifies the Kubernetes or custom-resource API group and version used to interpret this object.
+    details: The value combines an API group, such as source.toolkit.fluxcd.io, with a version such as v1.
+    matches:
+      - type: yaml-key
+        value: apiVersion
+  - id: flux-source-api-group
+    title: Flux Source Toolkit API Group
+    category: Kubernetes Resources
+    summary: The Flux API group containing source resources such as GitRepository, HelmRepository, Bucket, and OCIRepository.
+    matches:
+      - type: term
+        value: source.toolkit.fluxcd.io
+  - id: kubernetes-api-v1
+    title: API version v1
+    category: Kubernetes Resources
+    summary: The stable version identifier for this Kubernetes or custom-resource API.
+    matches:
+      - type: term
+        value: v1
+        files:
+          - '*.yaml'
+          - '*.yml'
+  - id: kubernetes-kind-key
+    title: kind
+    category: Kubernetes Resources
+    summary: Identifies the Kubernetes resource type represented by the YAML object.
+    matches:
+      - type: yaml-key
+        value: kind
+  - id: flux-helm-repository
+    title: HelmRepository
+    category: Kubernetes Resources
+    summary: A Flux source resource that defines where a Helm chart repository is located and how Flux should retrieve its index.
+    details: A HelmRepository is commonly referenced by a HelmRelease or chart source definition.
+    matches:
+      - type: yaml-value
+        value: HelmRepository
+      - type: term
+        value: HelmRepository
+      - type: term
+        value: helm-repo
+  - id: metadata-name-path
+    title: metadata.name
+    category: Kubernetes Resources
+    summary: The unique name assigned to this Kubernetes resource within its namespace.
+    matches:
+      - type: yaml-path
+        value: metadata.name
+  - id: yaml-format
+    title: YAML
+    category: Helm & Packaging
+    summary: A human-readable configuration format commonly used for Kubernetes, Helm, Flux, and GitLab pipeline files.
+    matches:
+      - type: term
+        value: yaml
+      - type: term
+        value: yml
   - id: eids-acronym
     title: E-IDS
     category: FAA & E-IDS Acronyms

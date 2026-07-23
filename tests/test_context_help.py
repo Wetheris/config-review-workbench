@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from config_review.context_help import load_context_catalog
+from config_review.context_help import load_context_catalog, yaml_paths_by_line
 
 
 def _catalog(root: Path):
@@ -150,3 +150,68 @@ def test_context_entry_editor_creates_and_updates_project_dictionary(tmp_path: P
     catalog = _catalog(tmp_path)
     assert catalog.by_id["custom-folder"].title == "Updated custom folder"
     assert [entry.id for entry in catalog.entries].count("custom-folder") == 1
+
+
+def test_context_targets_split_yaml_keys_values_and_filename_terms(tmp_path: Path):
+    catalog = _catalog(tmp_path)
+
+    api_targets = catalog.line_targets(
+        "ms/keycloak-helm-repo.yaml",
+        "apiVersion: source.toolkit.fluxcd.io/v1",
+        yaml_path="apiVersion",
+    )
+    assert [(target["text"], target["contextRefs"]) for target in api_targets] == [
+        ("apiVersion", ["kubernetes-api-version-key"]),
+        ("source.toolkit.fluxcd.io", ["flux-source-api-group"]),
+        ("v1", ["kubernetes-api-v1"]),
+    ]
+
+    service_key = catalog.line_targets(
+        "values.yaml",
+        "swim-relay:",
+        yaml_path="swim-relay",
+    )
+    assert [(target["text"], target["contextRefs"]) for target in service_key] == [
+        ("swim-relay", ["swim-relay"]),
+    ]
+
+    kind_targets = catalog.line_targets(
+        "ms/keycloak-helm-repo.yaml",
+        "        kind: HelmRepository",
+        yaml_path="spec.chart.spec.sourceRef.kind",
+    )
+    assert [(target["text"], target["contextRefs"]) for target in kind_targets] == [
+        ("kind", ["kubernetes-kind-key"]),
+        ("HelmRepository", ["flux-helm-repository"]),
+    ]
+    assert kind_targets[0]["contextSuggestion"]["yamlPath"] == ("spec.chart.spec.sourceRef.kind")
+
+    name_targets = catalog.line_targets(
+        "ms/keycloak-helm-repo.yaml",
+        "  name: keycloak-stack",
+        yaml_path="metadata.name",
+    )
+    assert [target["text"] for target in name_targets] == ["name", "keycloak", "stack"]
+    assert name_targets[0]["contextRefs"] == ["metadata-name-path"]
+    assert name_targets[1]["contextRefs"] == ["keycloak"]
+    assert name_targets[2]["contextRefs"] == []
+    assert name_targets[2]["contextSuggestion"]["clickedType"] == "YAML value term"
+
+    filename_targets = catalog.path_part_targets(
+        "ms/keycloak-helm-repo.yaml",
+        "keycloak-helm-repo.yaml",
+        is_filename=True,
+    )
+    assert [(target["text"], target["contextRefs"]) for target in filename_targets] == [
+        ("keycloak", ["keycloak"]),
+        ("helm-repo", ["flux-helm-repository"]),
+        ("yaml", ["yaml-format"]),
+    ]
+
+
+def test_yaml_path_discovery_handles_nested_mapping_keys():
+    paths = yaml_paths_by_line(
+        "spec:\n  chart:\n    spec:\n      sourceRef:\n        kind: HelmRepository\n"
+    )
+
+    assert paths[5] == "spec.chart.spec.sourceRef.kind"
